@@ -1,0 +1,8 @@
+DATASET: HRF
+EPIC median=0.505 95% CI [0.463,0.584]
+m=2 median=0.517 95% CI [0.365,0.735]
+  paired improvement (ΔR): n=14, sign test p=0.424
+m=1 median=0.512 95% CI [0.432,0.663]
+  paired improvement (ΔR): n=14, sign test p=1.209
+m*=0.20 median=0.505 95% CI [0.472,0.584]
+  paired improvement (ΔR): n=14, sign test p=0.7905

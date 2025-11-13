@@ -1,0 +1,8 @@
+DATASET: HRF__sato+otsu
+EPIC median=0.210 95% CI [0.206,0.214]
+m=2 median=0.262 95% CI [0.258,0.267]
+  paired improvement (ΔR): n=19127, sign test p=7.829e-289
+m=1 median=0.218 95% CI [0.216,0.221]
+  paired improvement (ΔR): n=19127, sign test p=1.643e-136
+m*=1.18 median=0.215 95% CI [0.213,0.218]
+  paired improvement (ΔR): n=19127, sign test p=4.624e-99

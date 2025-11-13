@@ -1,0 +1,6 @@
+DATASET: HRF__frangi+quantile
+Residual ΔR>0 vs m=2: n=12900, p=0.00e+00
+Residual ΔR>0 vs m=1: n=12900, p=5.70e-254
+Angle Δφ>0 vs m=2: n=11607, p=4.29e-24
+Angle Δφ>0 vs m=1: n=11608, p=2.33e-07
+Angle Δφ>0 vs 120°: n=11607, p=6.71e-187

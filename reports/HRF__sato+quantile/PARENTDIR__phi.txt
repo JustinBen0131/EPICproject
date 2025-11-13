@@ -1,0 +1,6 @@
+DATASET: HRF__sato+quantile
+Residual ΔR>0 vs m=2: n=5915, p=1.68e-122
+Residual ΔR>0 vs m=1: n=5915, p=1.73e-47
+Angle Δφ>0 vs m=2: n=5914, p=2.87e-13
+Angle Δφ>0 vs m=1: n=5914, p=5.50e-07
+Angle Δφ>0 vs 120°: n=5914, p=0.00e+00

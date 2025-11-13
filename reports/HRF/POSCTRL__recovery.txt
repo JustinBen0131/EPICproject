@@ -1,0 +1,7 @@
+DATASET: HRF
+N synthetic nodes: 1500
+median|Δm|=0.308053
+MAE=0.308053
+Theil–Sen slope=0.735479 [0.696590,0.772453]
+Pearson r=0.588336
+dir noise (deg)=3.000, radius noise frac SD=0.050000

@@ -1,0 +1,19 @@
+DATASET: HRF__frangi+quantile
+Grid svd_ratio_min=(3.0, 3.5, 4.0), angle_min_deg=(10.0, 12.0, 15.0)
+Valid cells (n>=20): 9 / 9
+Baseline strict-QC: 0.6605
+Worst p (lower better) over valid cells: 0.00049975
+Worst strict-QC drift: 14.21 pp
+median R(m):
+  svd≥3: 0.438, 0.436, 0.434
+  svd≥3.5: 0.360, 0.359, 0.358
+  svd≥4: 0.350, 0.349, 0.348
+p-values (≤ 0.01 required):
+  svd≥3: 0.0005, 0.0005, 0.0005
+  svd≥3.5: 0.0005, 0.0005, 0.0005
+  svd≥4: 0.0005, 0.0005, 0.0005
+strict-QC fractions:
+  svd≥3: 0.665, 0.668, 0.672
+  svd≥3.5: 0.789, 0.791, 0.793
+  svd≥4: 0.799, 0.800, 0.803
+Outcome: FAIL

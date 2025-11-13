@@ -1,0 +1,33 @@
+===== RUN SUMMARY — HRF__frangi+otsu =====
+STEP 1 — HRF killer result: FAIL | Worst-case across nulls: p_med=0.00019996, p_frac=0.00019996, max δ=-0.040957
+STEP 4 — Ablation test: PASS | Worst p: 0.00049975 | Worst QC drift: 5.10 pp
+Images        : 23/23  (100.0%), with nodes in 21
+Nodes         : raw→deg3→kept  41300 → 13159 → 3941  (kept/raw 9.5%)
+QC (loose/strict pass) : 3652/3941 (92.7%)  |  2120/3941 (53.8%)
+m stats       : median=0.281, IQR=(0.200,1.087), mean=0.912
+R(m) median   : 0.481
+At bracket edge (±0.02) : 2031
+Baselines     : Baseline m=2: median=0.733 | paired ΔR>0 (node-level): n=3941, p=0.00e+00 | Baseline m=1: median=0.535 | paired ΔR>0 (node-level): n=3941, p=6.22e-230 | Baseline m*=0.28: median=0.492 | paired ΔR>0 (node-level): n=3941, p=1.20e-167 | Image-level ΔR>0 vs m=2: n=21, p=9.54e-07 | Image-level ΔR>0 vs m=1: n=21, p=9.54e-07 | Image-level ΔR>0 vs m*=0.28: n=21, p=2.21e-04
+Skip reasons  : bad_tangent=6905, not_deg3=2068, short_branch=1343, angle_out_of_range=324, no_m_candidate=0, qc_fail=0, small_radius=0
+Elapsed       : 13m 40s
+Top images by nodes kept (up to 20):
+  - 06_dr: 556
+  - 11_h: 412
+  - 11_g: 273
+  - 06_g: 260
+  - 15_h: 217
+  - 15_g: 209
+  - 03_dr: 205
+  - 14_dr: 205
+  - 06_h: 201
+  - 09_h: 164
+  - 12_dr: 157
+  - 10_dr: 156
+  - 10_g: 141
+  - 07_h: 137
+  - 03_g: 136
+  - 05_g: 126
+  - 13_dr: 126
+  - 03_h: 105
+  - 01_dr: 74
+  - 04_g: 55

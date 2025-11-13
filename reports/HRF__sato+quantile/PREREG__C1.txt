@@ -1,0 +1,10 @@
+DATASET: HRF__sato+quantile
+Claim HRF-C1 (held-out closure @ angle-only m):
+Observed \tilde R = 0.238881  [boot 95% CI 0.231660,0.245093]
+shuffle: p_median(lower)=0.00019996, p_frac<0.55(higher)=0.00019996, Cliff's δ=-0.779757
+swap: p_median(lower)=0.00019996, p_frac<0.55(higher)=0.00019996, Cliff's δ=-0.321623
+randtheta: p_median(lower)=0.00019996, p_frac<0.55(higher)=0.00019996, Cliff's δ=-0.707800
+rshuffle: p_median(lower)=0.00019996, p_frac<0.55(higher)=0.00019996, Cliff's δ=-0.520605
+Thresholds: p <= 0.001 on BOTH median and Pr[R<0.55], and Cliff's δ <= -0.20 vs EVERY null
+Worst-case across nulls: p_med=0.00019996, p_frac=0.00019996, max δ=-0.321623
+Outcome: PASS

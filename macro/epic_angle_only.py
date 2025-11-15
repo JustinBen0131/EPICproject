@@ -14,7 +14,7 @@ from typing import List, Tuple, Dict, Optional
 
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
+from tqdm import tqdmU
 
 # Imaging + plotting stack (auto-install if missing; headless-safe for PNG saving)
 try:
@@ -1707,16 +1707,50 @@ def plot_residual_distribution(
 def plot_fixed_m_baselines(df: pd.DataFrame, dataset: str,
                            fixed_ms=(2.0, 1.0), grid_ms=np.linspace(0.2, 4.0, 381)):
     """
-    Panel B2 — Baselines (fixed m).
-    Compares EPIC per-node R(m_node) against R(m) for classical fixed m and the dataset's best single m*.
-    If directions are absent, falls back to a normalized scalar equation misfit.
-    Outputs:
+    Panel B — Baselines (fixed m) + Radii-only additive test.
+
+    Part 1 (unchanged): compares EPIC per-node R(m_node) against R(m) for classical fixed m
+    and the dataset's best single m*. If directions are absent, falls back to a normalized
+    scalar equation misfit. Outputs:
       figures/<DATASET>/dataset_<DATASET>__residual_baselines.png
+      figures/<DATASET>/dataset_<DATASET>__paired_deltaR_ecdf.png
       reports/<DATASET>/BASELINES__R_m.txt
+
+    Part 2 (new): radii-only additive test for r0^α ≈ r1^α + r2^α, without using directions:
+      • Fit a single α* by minimizing the median normalized additive residual D_α.
+      • Compare to fixed α baselines: α=3.0 (volume-priced, Poiseuille) and α=2.5 (surface-priced).
+      • If available, also evaluate geometry-informed per-node α_i = (m_angleonly + 4)/2 (n=4).
+    Outputs:
+      figures/<DATASET>/dataset_<DATASET>__radii_additive_hist.png
+      figures/<DATASET>/dataset_<DATASET>__radii_additive_ecdf.png
+      reports/<DATASET>/RADD__radii_only.txt
     """
     import numpy as np, matplotlib.pyplot as plt
     from math import comb
 
+    # ---------- Helper stats ----------
+    def bootstrap_ci_median(x, B=5000):
+        x = np.asarray(x, dtype=float)
+        x = x[np.isfinite(x)]
+        if x.size == 0:
+            return float("nan"), float("nan")
+        rng = np.random.default_rng(13)
+        meds = np.median(rng.choice(x, size=(int(B), x.size), replace=True), axis=1)
+        return float(np.percentile(meds, 2.5)), float(np.percentile(meds, 97.5))
+
+    def sign_test_improvement(a, b):
+        # Improvement = baseline - method (positive means method better)
+        d = b - a
+        d = d[np.isfinite(d) & (d != 0)]
+        n = d.size
+        if n == 0:
+            return 0, 0, float("nan")
+        k = int(np.sum(d > 0))
+        p_lower = sum(comb(n, i) for i in range(0, k+1)) / (2**n)
+        p_upper = sum(comb(n, i) for i in range(k, n+1)) / (2**n)
+        return n, k, 2 * min(p_lower, p_upper)
+
+    # ---------- Existing baseline comparison (R vector or angle-equation misfit) ----------
     have_dirs = set(['e0x','e0y','e1x','e1y','e2x','e2y']).issubset(df.columns)
     r0 = df['r0'].to_numpy(float); r1 = df['r1'].to_numpy(float); r2 = df['r2'].to_numpy(float)
     t12 = np.deg2rad(df['theta12_deg'].to_numpy(float))
@@ -1738,21 +1772,6 @@ def plot_fixed_m_baselines(df: pd.DataFrame, dataset: str,
         val = (r0**(2*m)) - (r1**(2*m)) - (r2**(2*m)) - 2*c*(r1**m)*(r2**m)
         scale = (r0**(2*m)) + (r1**(2*m)) + (r2**(2*m)) + 1e-12
         return np.abs(val)/scale
-
-    def bootstrap_ci_median(x, B=5000):
-        rng = np.random.default_rng(13)
-        meds = np.median(rng.choice(x, size=(B, x.size), replace=True), axis=1)
-        return float(np.percentile(meds, 2.5)), float(np.percentile(meds, 97.5))
-
-    def sign_test_improvement(a, b):
-        d = b - a
-        d = d[np.isfinite(d) & (d != 0)]
-        n = d.size
-        k = int(np.sum(d > 0))
-        # two-sided exact sign test
-        p_lower = sum(comb(n, i) for i in range(0, k+1)) / (2**n)
-        p_upper = sum(comb(n, i) for i in range(k, n+1)) / (2**n)
-        return n, k, 2 * min(p_lower, p_upper)
 
     if have_dirs:
         R_fixed = {f"m={m:g}": R_vector(m) for m in fixed_ms}
@@ -1791,7 +1810,7 @@ def plot_fixed_m_baselines(df: pd.DataFrame, dataset: str,
             fontsize=9, bbox=dict(facecolor="white", alpha=0.85, edgecolor="none"))
     save_png(fig, FIG_ROOT / dataset / f"dataset_{dataset}__residual_baselines.png")
 
-    # NEW: ECDF of paired improvements ΔR = R(baseline) − R(EPIC)
+    # ECDF of paired improvements ΔR = R(baseline) − R(EPIC)
     if np.all(np.isfinite(R_epic)):
         figD = plt.figure(figsize=(7.2, 4.8)); axD = plt.gca()
         for name, Rb in R_fixed.items():
@@ -1815,6 +1834,116 @@ def plot_fixed_m_baselines(df: pd.DataFrame, dataset: str,
         f.write(f"DATASET: {dataset}\n")
         for L in lines: f.write(L + "\n")
     log("[BASELINES] " + " | ".join(lines))
+
+    # ---------- NEW: Radii-only additive test (no directions) ----------
+    # Uses helpers defined elsewhere in the file: fit_global_alpha, additive_Dalpha.
+    # If those helpers were moved, we inline vectorized versions here as needed.
+    try:
+        # Vectorized residual for a scalar alpha
+        def Dalpha_arr(alpha):
+            num = np.abs(np.power(r0, alpha) - (np.power(r1, alpha) + np.power(r2, alpha)))
+            den = (np.power(r1, alpha) + np.power(r2, alpha) + 1e-12)
+            return num / den
+
+        # Grid search for alpha* that minimizes median D_alpha
+        grid_alpha = np.linspace(1.5, 4.0, 501)
+        med_D = np.array([np.median(Dalpha_arr(a)) for a in grid_alpha])
+        alpha_star = float(grid_alpha[int(np.argmin(med_D))])
+
+        # Observed distributions
+        D_star = Dalpha_arr(alpha_star)
+        D_a3   = Dalpha_arr(3.0)   # classical (m=2,n=4)
+        D_a25  = Dalpha_arr(2.5)   # surface-priced (m=1,n=4)
+
+        # Optional: geometry-informed per-node alpha_i from angle-only m (n=4)
+        D_alpha_i = None
+        if "m_angleonly" in df.columns:
+            m_i = df["m_angleonly"].to_numpy(float)
+            a_i = 0.5 * (m_i + 4.0)
+            # Per-node alpha: pow with vector exponent
+            D_alpha_i = (np.abs(np.power(r0, a_i) - (np.power(r1, a_i) + np.power(r2, a_i))) /
+                         (np.power(r1, a_i) + np.power(r2, a_i) + 1e-12))
+
+        # Text summary + paired sign tests (baseline − method; positive is better)
+        lines_radd = []
+        def _sum_line(name, arr):
+            med = float(np.median(arr[np.isfinite(arr)]))
+            lo, hi = bootstrap_ci_median(arr[np.isfinite(arr)])
+            lines_radd.append(f"{name} median Dα={med:.3f} 95% CI [{lo:.3f},{hi:.3f}]")
+
+        _sum_line(f"α*={alpha_star:.3f}", D_star)
+        _sum_line("α=3.0", D_a3)
+        _sum_line("α=2.5", D_a25)
+        if D_alpha_i is not None:
+            _sum_line("α_i=(m_angleonly+4)/2", D_alpha_i)
+
+        # Paired sign tests vs α=3.0 and α=2.5
+        for base_name, base_arr in [("α=3.0", D_a3), ("α=2.5", D_a25)]:
+            n,k,p = sign_test_improvement(D_star, base_arr)
+            lines_radd.append(f"  paired improvement (ΔD = {base_name} − α*): n={n}, p={p:.4g}")
+            if D_alpha_i is not None:
+                n2,k2,p2 = sign_test_improvement(D_alpha_i, base_arr)
+                lines_radd.append(f"  paired improvement (ΔD = {base_name} − α_i): n={n2}, p={p2:.4g}")
+
+        # Histogram figure
+        figH = plt.figure(figsize=(8.0, 5.2)); axH = plt.gca()
+        axH.hist(D_star[np.isfinite(D_star)], bins=40, alpha=0.85, label=f"α*={alpha_star:.3f}")
+        axH.hist(D_a3[np.isfinite(D_a3)],     bins=40, alpha=0.35, histtype="stepfilled", label="α=3.0")
+        axH.hist(D_a25[np.isfinite(D_a25)],   bins=40, alpha=0.35, histtype="stepfilled", label="α=2.5")
+        if D_alpha_i is not None:
+            axH.hist(D_alpha_i[np.isfinite(D_alpha_i)], bins=40, alpha=0.35, histtype="stepfilled", label="α_i=(m_angleonly+4)/2")
+        axH.set_xlabel("normalized additive residual Dα")
+        axH.set_ylabel("count")
+        axH.set_title(f"Radii-only additive test — {dataset}")
+        axH.grid(True, alpha=0.25)
+        axH.legend(loc="best")
+        axH.text(0.02, 0.98, "\n".join(lines_radd), transform=axH.transAxes, va="top", ha="left",
+                 fontsize=9, bbox=dict(facecolor="white", alpha=0.85, edgecolor="none"))
+        save_png(figH, FIG_ROOT / dataset / f"dataset_{dataset}__radii_additive_hist.png")
+
+        # ECDF of paired improvements ΔD = D(baseline) − D(method)
+        figE = plt.figure(figsize=(7.2, 4.8)); axE = plt.gca()
+        for name, arr in [(f"α*={alpha_star:.3f}", D_star),
+                          ("α=3.0", D_a3), ("α=2.5", D_a25)]:
+            if name.startswith("α*"):
+                continue  # we'll plot baselines relative to α*
+        # Baselines relative to α*
+        base_pairs = [("α=3.0", D_a3), ("α=2.5", D_a25)]
+        for name, base_arr in base_pairs:
+            Delta = base_arr - D_star
+            Delta = Delta[np.isfinite(Delta)]
+            x = np.sort(Delta)
+            if x.size > 0:
+                y = np.arange(1, x.size+1) / x.size
+                axE.step(x, y, where="post", label=f"{name} − α*")
+        # α_i relative to α* (optional)
+        if D_alpha_i is not None:
+            Delta_i = D_alpha_i - D_star
+            Delta_i = Delta_i[np.isfinite(Delta_i)]
+            if Delta_i.size > 0:
+                xi = np.sort(Delta_i)
+                yi = np.arange(1, xi.size+1) / xi.size
+                axE.step(xi, yi, where="post", label="α_i − α*")
+        axE.axvline(0.0, linewidth=1.0)
+        axE.set_xlabel("ΔD = D(baseline) − D(method)")
+        axE.set_ylabel("ECDF")
+        axE.set_title(f"Radii-only ΔD — {dataset}")
+        axE.grid(True, alpha=0.25)
+        axE.legend(loc="lower right")
+        save_png(figE, FIG_ROOT / dataset / f"dataset_{dataset}__radii_additive_ecdf.png")
+
+        # Write radii-only report
+        out_radd = CSV_ROOT / dataset / "RADD__radii_only.txt"
+        out_radd.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_radd, "w") as f:
+            f.write(f"DATASET: {dataset}\n")
+            f.write(f"alpha_star={alpha_star:.6f}\n")
+            for L in lines_radd:
+                f.write(L + "\n")
+        log("[RADD] " + " | ".join(lines_radd))
+
+    except Exception as e:
+        log(f"[RADD][WARN] radii-only additive test failed: {e}")
 
 
 

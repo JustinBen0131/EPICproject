@@ -1,0 +1,8 @@
+DATASET: STARE__sato+otsu
+N nodes: 16506
+Observed: median=0.312923 [95% CI 0.308004,0.318157], frac<0.55=0.795589
+Null reps per control: 2000
+shuffle: p_median(lower)= 0.00049975, p_frac<0.55(higher)= 0.00049975, Cliff's δ=-0.723684
+swap: p_median(lower)= 0.00049975, p_frac<0.55(higher)= 0.00049975, Cliff's δ=-0.187780
+randtheta: p_median(lower)= 0.00049975, p_frac<0.55(higher)= 0.00049975, Cliff's δ=-0.594737
+rshuffle: p_median(lower)= 0.00049975, p_frac<0.55(higher)= 0.00049975, Cliff's δ=-0.362594

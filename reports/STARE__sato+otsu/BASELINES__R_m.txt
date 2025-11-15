@@ -1,0 +1,8 @@
+DATASET: STARE__sato+otsu
+EPIC median=0.310 95% CI [0.305,0.316]
+m=2 median=0.578 95% CI [0.568,0.589]
+  paired improvement (ΔR): n=16506, sign test p=0
+m=1 median=0.358 95% CI [0.353,0.363]
+  paired improvement (ΔR): n=16506, sign test p=0
+m*=0.58 median=0.323 95% CI [0.320,0.328]
+  paired improvement (ΔR): n=16506, sign test p=1.479e-124

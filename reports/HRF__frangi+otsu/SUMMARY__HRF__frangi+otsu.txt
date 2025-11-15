@@ -1,33 +1,46 @@
 ===== RUN SUMMARY — HRF__frangi+otsu =====
-STEP 1 — HRF killer result: FAIL | Worst-case across nulls: p_med=0.00019996, p_frac=0.00019996, max δ=-0.040957
-STEP 4 — Ablation test: PASS | Worst p: 0.00049975 | Worst QC drift: 5.10 pp
-Images        : 23/23  (100.0%), with nodes in 21
-Nodes         : raw→deg3→kept  41300 → 13159 → 3941  (kept/raw 9.5%)
-QC (loose/strict pass) : 3652/3941 (92.7%)  |  2120/3941 (53.8%)
-m stats       : median=0.281, IQR=(0.200,1.087), mean=0.912
-R(m) median   : 0.481
-At bracket edge (±0.02) : 2031
-Baselines     : Baseline m=2: median=0.733 | paired ΔR>0 (node-level): n=3941, p=0.00e+00 | Baseline m=1: median=0.535 | paired ΔR>0 (node-level): n=3941, p=6.22e-230 | Baseline m*=0.28: median=0.492 | paired ΔR>0 (node-level): n=3941, p=1.20e-167 | Image-level ΔR>0 vs m=2: n=21, p=9.54e-07 | Image-level ΔR>0 vs m=1: n=21, p=9.54e-07 | Image-level ΔR>0 vs m*=0.28: n=21, p=2.21e-04
-Skip reasons  : bad_tangent=6905, not_deg3=2068, short_branch=1343, angle_out_of_range=324, no_m_candidate=0, qc_fail=0, small_radius=0
-Elapsed       : 13m 40s
-Top images by nodes kept (up to 20):
-  - 06_dr: 556
-  - 11_h: 412
-  - 11_g: 273
-  - 06_g: 260
-  - 15_h: 217
-  - 15_g: 209
-  - 03_dr: 205
-  - 14_dr: 205
-  - 06_h: 201
-  - 09_h: 164
-  - 12_dr: 157
-  - 10_dr: 156
-  - 10_g: 141
-  - 07_h: 137
-  - 03_g: 136
-  - 05_g: 126
-  - 13_dr: 126
-  - 03_h: 105
-  - 01_dr: 74
-  - 04_g: 55
+Dataset base: HRF
+
+[CONFIG]
+seg=frangi, thresh=otsu, profile=none
+bracket m∈[0.20,4.00]  |  tangent_len=16, svd_ratio_min=3.0
+min_branch_len=10, dedup_radius=3
+strict_qc=False  |  angle_auto=False, angle_floor=10.0
+radius_jitter_frac (run arg)=0.0
+
+[COUNTS]
+Images processed   : 90/90 (with nodes in 45)
+Nodes raw→deg3→kept: 193213 → 61848 → 18768  | kept/raw 9.7%  kept/deg3 30.3%
+
+[QC & METRICS]
+QC loose/strict    : 17561/18768 (93.6%)  |  13061/18768 (69.6%)
+m median (IQR)     : 0.425  (0.200,1.277)   mean=0.989
+R(m) median        : 0.481
+m at bracket edge  : 9258  (49.3%) at ±0.02
+angle_min per image: median=10.0°  range=(10.0°, 10.0°)
+parent ambiguity   : 67.0%
+
+[BASELINES]
+m=2: median=0.687, paired ΔR>0 n=18768, p=0.00e+00 | m=1: median=0.522, paired ΔR>0 n=18768, p=0.00e+00 | m*=0.31: median=0.492, paired ΔR>0 n=18768, p=0.00e+00 | [img-median] m=2: n=45, p=5.68e-14 | [img-median] m=1: n=45, p=5.68e-14 | [img-median] m*=0.31: n=45, p=5.68e-14
+
+[SKIP REASONS]
+bad_tangent=32213 (65.2%), not_deg3=9401 (19.0%), short_branch=6325 (12.8%), angle_out_of_range=1468 (3.0%), no_m_candidate=0 (0.0%), qc_fail=0 (0.0%), small_radius=0 (0.0%)
+
+[PREREG/ABLATION]
+STEP 1 — held-out closure: FAIL | Worst-case across nulls: p_med=0.00049975, p_frac=0.00049975, max δ=-0.111479
+STEP 4 — ablation: PASS | Worst p: 0.00049975 | Worst QC drift: 4.15 pp
+
+[ARTIFACTS]
+/Users/patsfan753/Desktop/EPIC/figures/HRF__frangi+otsu/dataset_HRF__frangi+otsu__residual_hist.png
+/Users/patsfan753/Desktop/EPIC/figures/HRF__frangi+otsu/dataset_HRF__frangi+otsu__residual_baselines.png
+/Users/patsfan753/Desktop/EPIC/figures/HRF__frangi+otsu/dataset_HRF__frangi+otsu__paired_deltaR_ecdf.png
+/Users/patsfan753/Desktop/EPIC/figures/HRF__frangi+otsu/dataset_HRF__frangi+otsu__theta_vs_m_scatter.png
+/Users/patsfan753/Desktop/EPIC/figures/HRF__frangi+otsu/dataset_HRF__frangi+otsu__ablation_medianR_grid.png
+/Users/patsfan753/Desktop/EPIC/figures/HRF__frangi+otsu/dataset_HRF__frangi+otsu__QC_tradeoff_curves.png
+
+[WARNINGS]
+- M AT BRACKET EDGE: 49.3% at ±0.02 of bracket — consider widening bracket or re-check m solver.
+- PARENT AMBIGUITY: 67.0% nodes ambiguous — consider stronger gating or tie-breakers.
+- SPARSE IMAGES: 45 image(s) produced zero kept nodes — check segmentation or QC thresholds.
+
+Elapsed: 1h 9m

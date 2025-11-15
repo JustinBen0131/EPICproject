@@ -1,0 +1,2 @@
+variant	N_nodes	R_med	R_med_CI_lo	R_med_CI_hi	p_med	delta	Outcome	p_med_jit	delta_jit	Outcome_jit	strict_pass_frac
+sato+otsu	83	0.3891008794307709	0.31759485602378845	0.4327225685119629			FAIL				0.6987951807228916

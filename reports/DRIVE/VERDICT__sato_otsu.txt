@@ -1,0 +1,14 @@
+===== VERDICT (sato_otsu) — DRIVE =====
+time: 2025-11-15 19:09:21 UTC
+scope: dataset
+
+[DRIVE__sato+otsu] OVERALL: NO SUPPORT  |  points=1 (primary=4, +1 per secondary PASS; counted=4)
+  Primary (held-out closure): FAIL  | worst p_med=0.00049975, worst p_frac=0.00049975, max δ=-0.144236
+  Panel C (θ–m near-symmetric): FAIL  | share≤0.25=0.091
+  Ablation robustness: PASS
+  Parent-direction Δφ vs baselines: FAIL
+  Uncertainty (step 3): FAIL
+  Equipartition (demo): NA
+  Snell refraction (demo): NA
+
+fingerprint: 9464c4a05542c3e1

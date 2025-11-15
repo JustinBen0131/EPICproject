@@ -1,0 +1,6 @@
+DATASET: STARE__sato+otsu
+Residual ΔR>0 vs m=2: n=16506, p=0.00e+00
+Residual ΔR>0 vs m=1: n=16506, p=0.00e+00
+Angle Δφ>0 vs m=2: n=16432, p=6.83e-41
+Angle Δφ>0 vs m=1: n=16432, p=1.43e-18
+Angle Δφ>0 vs 120°: n=16432, p=5.48e-267

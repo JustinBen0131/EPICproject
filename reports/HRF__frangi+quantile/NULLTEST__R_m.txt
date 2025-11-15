@@ -1,8 +1,8 @@
 DATASET: HRF__frangi+quantile
-N nodes: 12900
-Observed: median=0.442730 [95% CI 0.436425,0.448595], frac<0.55=0.755271
-Null reps per control: 5000
-shuffle: p_median(lower)= 0.00019996, p_frac<0.55(higher)= 0.00019996, Cliff's δ=-0.597748
-swap: p_median(lower)= 0.00019996, p_frac<0.55(higher)= 0.00019996, Cliff's δ=-0.102315
-randtheta: p_median(lower)= 0.00019996, p_frac<0.55(higher)= 0.00019996, Cliff's δ=-0.532951
-rshuffle: p_median(lower)= 0.00019996, p_frac<0.55(higher)= 0.00019996, Cliff's δ=-0.226433
+N nodes: 52983
+Observed: median=0.440747 [95% CI 0.437579,0.443415], frac<0.55=0.765566
+Null reps per control: 2000
+shuffle: p_median(lower)= 0.00049975, p_frac<0.55(higher)= 0.00049975, Cliff's δ=-0.616417
+swap: p_median(lower)= 0.00049975, p_frac<0.55(higher)= 0.00049975, Cliff's δ=-0.110560
+randtheta: p_median(lower)= 0.00049975, p_frac<0.55(higher)= 0.00049975, Cliff's δ=-0.540919
+rshuffle: p_median(lower)= 0.00049975, p_frac<0.55(higher)= 0.00049975, Cliff's δ=-0.242054

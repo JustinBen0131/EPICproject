@@ -1,0 +1,10 @@
+DATASET: STARE__sato+otsu
+alpha_star=1.500000
+α*=1.500 median Dα=0.349 95% CI [0.343,0.354]
+α=3.0 median Dα=0.568 95% CI [0.558,0.577]
+α=2.5 median Dα=0.477 95% CI [0.468,0.487]
+α_i=(m_angleonly+4)/2 median Dα=0.453 95% CI [0.445,0.460]
+  paired improvement (ΔD = α=3.0 − α*): n=16496, p=0
+  paired improvement (ΔD = α=3.0 − α_i): n=16496, p=0
+  paired improvement (ΔD = α=2.5 − α*): n=16496, p=0
+  paired improvement (ΔD = α=2.5 − α_i): n=16496, p=3.343e-301

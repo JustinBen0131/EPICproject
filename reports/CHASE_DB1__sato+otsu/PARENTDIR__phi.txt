@@ -1,0 +1,6 @@
+DATASET: CHASE_DB1__sato+otsu
+Residual ΔR>0 vs m=2: n=1876, p=1.51e-107
+Residual ΔR>0 vs m=1: n=1876, p=2.08e-25
+Angle Δφ>0 vs m=2: n=1868, p=4.92e-02
+Angle Δφ>0 vs m=1: n=1868, p=6.75e-08
+Angle Δφ>0 vs 120°: n=1868, p=8.70e-65

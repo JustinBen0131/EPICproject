@@ -1,0 +1,19 @@
+DATASET: CHASE_DB1__sato+otsu
+Grid svd_ratio_min=(3.0, 3.5, 4.0), angle_min_deg=(10.0, 12.0, 15.0)
+Valid cells (n>=20): 9 / 9
+Baseline strict-QC: 0.7527
+Worst p (lower better) over valid cells: 0.00049975
+Worst strict-QC drift: 6.83 pp
+median R(m):
+  svd≥3: 0.323, 0.322, 0.321
+  svd≥3.5: 0.323, 0.322, 0.321
+  svd≥4: 0.304, 0.304, 0.304
+p-values (≤ 0.01 required):
+  svd≥3: 0.0005, 0.0005, 0.0005
+  svd≥3.5: 0.0005, 0.0005, 0.0005
+  svd≥4: 0.0005, 0.0005, 0.0005
+strict-QC fractions:
+  svd≥3: 0.758, 0.759, 0.762
+  svd≥3.5: 0.758, 0.759, 0.762
+  svd≥4: 0.819, 0.820, 0.821
+Outcome: PASS

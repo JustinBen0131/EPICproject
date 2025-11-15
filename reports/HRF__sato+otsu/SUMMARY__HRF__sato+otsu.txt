@@ -27,7 +27,7 @@ m=2: median=0.262, paired ΔR>0 n=19127, p=7.83e-289 | m=1: median=0.218, paired
 not_deg3=2895 (68.7%), bad_tangent=1175 (27.9%), angle_out_of_range=77 (1.8%), short_branch=65 (1.5%), no_m_candidate=0 (0.0%), qc_fail=0 (0.0%), small_radius=0 (0.0%)
 
 [PREREG/ABLATION]
-STEP 1 — held-out closure: PASS | Worst-case across nulls: p_med=0.00019996, p_frac=0.00019996, max δ=-0.282865
+STEP 1 — held-out closure: PASS | Worst-case across nulls: p_med=0.00049975, p_frac=0.00049975, max δ=-0.283161
 STEP 4 — ablation: PASS | Worst p: 0.00049975 | Worst QC drift: 1.03 pp
 
 [ARTIFACTS]
@@ -43,4 +43,4 @@ STEP 4 — ablation: PASS | Worst p: 0.00049975 | Worst QC drift: 1.03 pp
 - PARENT AMBIGUITY: 84.8% nodes ambiguous — consider stronger gating or tie-breakers.
 - SPARSE IMAGES: 45 image(s) produced zero kept nodes — check segmentation or QC thresholds.
 
-Elapsed: 1h 51m
+Elapsed: 1h 23m

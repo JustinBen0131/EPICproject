@@ -1,10 +1,10 @@
 DATASET: HRF__frangi+otsu
 Claim HRF-C1 (held-out closure @ angle-only m):
-Observed \tilde R = 0.481554  [boot 95% CI 0.475251,0.488463]
-shuffle: p_median(lower)=0.00019996, p_frac<0.55(higher)=0.00019996, Cliff's δ=-0.574357
-swap: p_median(lower)=0.00019996, p_frac<0.55(higher)=0.00019996, Cliff's δ=-0.040957
-randtheta: p_median(lower)=0.00019996, p_frac<0.55(higher)=0.00019996, Cliff's δ=-0.508200
-rshuffle: p_median(lower)=0.00019996, p_frac<0.55(higher)=0.00019996, Cliff's δ=-0.225687
+Observed \tilde R = 0.481212  [boot 95% CI 0.478174,0.484714]
+shuffle: p_median(lower)=0.00049975, p_frac<0.55(higher)=0.00049975, Cliff's δ=-0.604900
+swap: p_median(lower)=0.00049975, p_frac<0.55(higher)=0.00049975, Cliff's δ=-0.043092
+randtheta: p_median(lower)=0.00049975, p_frac<0.55(higher)=0.00049975, Cliff's δ=-0.517906
+rshuffle: p_median(lower)=0.00049975, p_frac<0.55(higher)=0.00049975, Cliff's δ=-0.226971
 Thresholds: p <= 0.001 on BOTH median and Pr[R<0.55], and Cliff's δ <= -0.20 vs EVERY null
-Worst-case across nulls: p_med=0.00019996, p_frac=0.00019996, max δ=-0.040957
+Worst-case across nulls: p_med=0.00049975, p_frac=0.00049975, max δ=-0.043092
 Outcome: FAIL

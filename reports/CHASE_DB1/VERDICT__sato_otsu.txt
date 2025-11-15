@@ -1,0 +1,14 @@
+===== VERDICT (sato_otsu) — CHASE_DB1 =====
+time: 2025-11-15 19:04:39 UTC
+scope: dataset
+
+[CHASE_DB1__sato+otsu] OVERALL: NO SUPPORT  |  points=1 (primary=4, +1 per secondary PASS; counted=4)
+  Primary (held-out closure): FAIL  | worst p_med=0.00049975, worst p_frac=0.00049975, max δ=-0.180678
+  Panel C (θ–m near-symmetric): FAIL  | share≤0.25=0.200
+  Ablation robustness: PASS
+  Parent-direction Δφ vs baselines: FAIL
+  Uncertainty (step 3): FAIL
+  Equipartition (demo): NA
+  Snell refraction (demo): NA
+
+fingerprint: cf315c4ed007c8ab

@@ -1,0 +1,9 @@
+DATASET: DRIVE__sato+otsu
+Adaptive symmetric tol used: 1.240
+N_sym=22, strict PASS=11
+sym tol (adaptive) r1/r2 ≤ 1.24
+median|Δm|=1.514 (95% CI 1.111–1.941)
+Theil–Sen slope=0.067 [0.000,0.159]
+Pearson r=0.652
+% within |Δm|≤0.25 = 9.1%
+Panel C verdict: FAIL

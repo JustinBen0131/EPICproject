@@ -1,0 +1,9 @@
+DATASET: CHASE_DB1__sato+otsu
+Adaptive symmetric tol used: 1.080
+N_sym=170, strict PASS=119
+sym tol (adaptive) r1/r2 ≤ 1.08
+median|Δm|=1.380 (95% CI 1.203–1.489)
+Theil–Sen slope=0.087 [0.058,0.116]
+Pearson r=0.587
+% within |Δm|≤0.25 = 18.2%
+Panel C verdict: FAIL

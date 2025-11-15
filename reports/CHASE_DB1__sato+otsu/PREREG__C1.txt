@@ -1,0 +1,10 @@
+DATASET: CHASE_DB1__sato+otsu
+Claim HRF-C1 (held-out closure @ angle-only m):
+Observed \tilde R = 0.327996  [boot 95% CI 0.313736,0.346665]
+shuffle: p_median(lower)=0.00049975, p_frac<0.55(higher)=0.00049975, Cliff's δ=-0.734218
+swap: p_median(lower)=0.00049975, p_frac<0.55(higher)=0.00049975, Cliff's δ=-0.201724
+randtheta: p_median(lower)=0.00049975, p_frac<0.55(higher)=0.00049975, Cliff's δ=-0.631310
+rshuffle: p_median(lower)=0.00049975, p_frac<0.55(higher)=0.00049975, Cliff's δ=-0.353867
+Thresholds: p <= 0.001 on BOTH median and Pr[R<0.55], and Cliff's δ <= -0.20 vs EVERY null
+Worst-case across nulls: p_med=0.00049975, p_frac=0.00049975, max δ=-0.201724
+Outcome: PASS

@@ -1,7 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-
+# parallelism
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import platform, inspect, subprocess
+from types import SimpleNamespace
+from dataclasses import asdict  # optional, only if you want the quick CSV write shown below
+import multiprocessing as mp
+try:
+    from threadpoolctl import threadpool_limits
+except Exception:
+    threadpool_limits = None
 import argparse
 import os
 import sys
@@ -14,7 +23,7 @@ from typing import List, Tuple, Dict, Optional
 
 import numpy as np
 import pandas as pd
-from tqdm import tqdmU
+from tqdm import tqdm
 
 # Imaging + plotting stack (auto-install if missing; headless-safe for PNG saving)
 try:
@@ -25,10 +34,28 @@ try:
     from skimage.segmentation import clear_border
     from scipy.ndimage import distance_transform_edt, gaussian_filter
     from scipy.stats import theilslopes, pearsonr
-
     import matplotlib
     matplotlib.use("Agg")  # headless backend for servers/CLI
     import matplotlib.pyplot as plt
+
+    # Publication-ready defaults: clean fonts, readable labels, tight layout
+    matplotlib.rcParams.update({
+        "figure.dpi": 120,
+        "savefig.dpi": 300,
+        "font.size": 11,
+        "axes.titlesize": 12,
+        "axes.labelsize": 11,
+        "xtick.labelsize": 10,
+        "ytick.labelsize": 10,
+        "legend.fontsize": 10,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.grid": True,
+        "grid.linestyle": "-",
+        "grid.alpha": 0.25,
+        "figure.autolayout": True
+    })
+
 except ModuleNotFoundError:
     import importlib, subprocess, sys
     missing = []
@@ -80,16 +107,192 @@ def ensure_dirs():
         d.mkdir(parents=True, exist_ok=True)
 
 
+# ---- PANEL FILTER (A/B) ----------------------------------------------
+def _apply_panel_filter(df: pd.DataFrame, mode: str = "all") -> pd.DataFrame:
+    """
+    Panel filtering policy.
+      - "all"    : return all rows with finite metrics (Option A, recommended)
+      - "strict" : keep only strict-QC nodes if the column is present (Option B)
+    """
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+    if str(mode).lower() == "strict" and ("qc_pass_strict" in df.columns):
+        return df[df["qc_pass_strict"].astype(bool)].copy()
+    return df
+
+# ---- EMPTY-CELL STUBS -------------------------------------------------
+def write_empty_reports(tag: str, reason: str = "no_kept_nodes") -> None:
+    """
+    When a variant/dataset has 0 kept nodes, write valid stub artifacts so downstream
+    steps don't fail or mislead.
+    """
+    base = tag.split("__", 1)[0]
+    out_dir = CSV_ROOT / tag
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Panel B (null test & prereg)
+    (out_dir / "NULLTEST__R_m.txt").write_text(
+        f"DATASET: {tag}\nN nodes: 0\nObserved: median=nan [95% CI nan,nan], frac<0.55=nan\n"
+        "Null reps per control: 0\n"
+    )
+    (out_dir / "PREREG__C1.txt").write_text(
+        f"DATASET: {tag}\nClaim HRF-C1 (held-out closure @ angle-only m):\n"
+        "Observed \\tilde R = nan  [boot 95% CI nan,nan]\n"
+        "Thresholds: p <= 0.001 on BOTH median and Pr[R<0.55], and Cliff's δ <= -0.20 vs EVERY null\n"
+        "Outcome: FAIL (no data)\n"
+    )
+    # Mirror to dataset base for canonical readers
+    base_dir = CSV_ROOT / base
+    base_dir.mkdir(parents=True, exist_ok=True)
+    (base_dir / "PREREG__C1.txt").write_text((out_dir / "PREREG__C1.txt").read_text())
+
+    # Baselines
+    (out_dir / "BASELINES__R_m.txt").write_text(f"DATASET: {tag}\n(no data; N=0)\n")
+
+    # Panel C
+    (base_dir / "PANELC__theta_vs_m_test.txt").write_text(
+        f"DATASET: {tag}\nN_sym=0\nPanel C verdict: FAIL (no data)\n"
+    )
+
+    # Ablation
+    (out_dir / "ABLATION__summary.txt").write_text(f"DATASET: {tag}\n(no data)\nOutcome: FAIL\n")
+    (out_dir / "ABLATION__test.txt").write_text("Outcome: FAIL\nWorst p: nan\nWorst QC drift: nan pp\n")
+
+    # Uncertainty CSV header (with outcome)
+    (out_dir / "UNCERTAINTY__nodes.csv").write_text(
+        "# STEP 3 — Per-node uncertainty: outcome=FAIL | frac_edge_moved=nan | median CI half-width=nan\n"
+        "image_id,node_id,m_hat,m_lo,m_hi,CI_width,at_edge_before,at_edge_after\n"
+    )
+
+# ---- RUN MANIFEST -----------------------------------------------------
+def write_run_manifest(tag: str,
+                       args_namespace: argparse.Namespace,
+                       extra: Optional[Dict] = None,
+                       img_paths: Optional[List[Path]] = None) -> None:
+    """
+    reports/<TAG>/RUN__manifest.json with CLI args, commit, env, lib versions, CPU info, RNG seeds, time, and code/data hashes.
+    """
+    out_dir = CSV_ROOT / tag
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Git commit (best effort)
+    try:
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=str(ROOT)).decode().strip()
+    except Exception:
+        commit = None
+
+    # Library versions (best effort)
+    try:
+        import scipy as _scipy, skimage as _skimage, matplotlib as _mpl
+        lib_versions = {
+            "python": sys.version,
+            "numpy": np.__version__,
+            "pandas": pd.__version__,
+            "scipy": _scipy.__version__,
+            "scikit_image": _skimage.__version__,
+            "matplotlib": _mpl.__version__,
+            "networkx": nx.__version__,
+        }
+    except Exception:
+        lib_versions = {"python": sys.version, "numpy": np.__version__, "pandas": pd.__version__}
+
+    # CPU/platform
+    cpu = {
+        "machine": platform.machine(),
+        "processor": platform.processor(),
+        "platform": platform.platform(),
+        "logical_cpus": os.cpu_count(),
+    }
+
+    # Code hashes for key functions
+    def _sh(s: str) -> str:
+        return hashlib.sha256(s.encode("utf-8", "ignore")).hexdigest()
+    try:
+        code_hashes = {
+            "analyze_image": _sh(inspect.getsource(analyze_image)),
+            "segment_vessels_with_meta": _sh(inspect.getsource(segment_vessels_with_meta)),
+            "plot_residual_distribution": _sh(inspect.getsource(plot_residual_distribution)),
+            "plot_theta_vs_m_scatter": _sh(inspect.getsource(plot_theta_vs_m_scatter)),
+        }
+    except Exception:
+        code_hashes = {}
+
+    # Data list hash (paths only; avoid reading pixels)
+    data_manifest = None
+    if img_paths:
+        try:
+            rels = [str(p) for p in sorted(img_paths)]
+            data_manifest = {
+                "count": len(rels),
+                "sha256_paths_list": _sh("\n".join(rels))
+            }
+        except Exception:
+            pass
+
+    payload = {
+        "tag": tag,
+        "timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "cli_args": vars(args_namespace),
+        "git_commit": commit,
+        "lib_versions": lib_versions,
+        "cpu": cpu,
+        "code_hashes": code_hashes,
+        "data_manifest": data_manifest,
+        "extra": (extra or {}),
+    }
+    (out_dir / "RUN__manifest.json").write_text(json.dumps(payload, indent=2, sort_keys=True))
+
+
 def log(msg: str):
     """
     Console + file logger (simple, robust, flushed).
     """
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
-    out = f"[{ts}] {msg}"
+    out = f"[{ts}] (pid={os.getpid()}) {msg}"   # ← add pid for multi-proc clarity
     print(out, flush=True)
     with open(LOG_ROOT / "run.log", "a") as f:
         f.write(out + "\n")
         f.flush()
+
+def _init_worker(intraop_threads: int = 1):
+    """
+    Runs in each worker process at start. Caps BLAS/OpenMP threads to avoid
+    oversubscription (NumPy/SciPy/Skimage may call into MKL/OPENBLAS).
+    """
+    if threadpool_limits is not None:
+        try:
+            threadpool_limits(limits=intraop_threads)
+        except Exception:
+            pass  # safe to ignore
+
+
+def _process_one_image(args_tuple):
+    """
+    Wrapper that runs analyze_image() in a worker. Returns (img, recs, diag, err_str).
+    """
+    img_path_str, dataset_tag, seg_cfg, qc_cfg, save_debug = args_tuple
+    try:
+        recs, diag = analyze_image(
+            img_path=Path(img_path_str),
+            dataset=dataset_tag,
+            seg_cfg=seg_cfg,
+            qc=qc_cfg,
+            save_debug=save_debug,
+            out_dir=ROOT
+        )
+        return img_path_str, recs, diag, None
+    except Exception as e:
+        # Bubble error up but keep the main loop robust
+        return img_path_str, [], {
+            "dataset": dataset_tag,
+            "image_id": Path(img_path_str).stem,
+            "n_nodes_total_raw": 0,
+            "n_nodes_total_dedup": 0,
+            "n_nodes_kept": 0,
+            "skip_reasons": {"worker_error": 1},
+            "error": str(e)
+        }, str(e)
+
 
 
 def human_time(seconds: float) -> str:
@@ -493,6 +696,75 @@ def branch_radius(dist: np.ndarray, points_rc: List[Tuple[int, int]], k: int = 8
     return float(np.median(means))
 
 
+# === NEW: robust SD from samples and per-branch stats ===
+def _robust_sd_from_samples(vals: List[float]) -> float:
+    """
+    Robust SD via IQR/1.349 (Normal reference) for outlier resistance.
+    """
+    if not vals:
+        return float("nan")
+    x = np.asarray(vals, float)
+    q1, q3 = np.percentile(x, [25, 75])
+    iqr = q3 - q1
+    return float(iqr / 1.349)  # NIST: IQR ≈ 1.349*SD under Normal
+
+
+def branch_radius_stats(dist: np.ndarray, points_rc: List[Tuple[int,int]],
+                        scheme: str = "A") -> Tuple[float, float]:
+    """
+    Return (radius_estimate, robust_sd) using EDT.
+    scheme 'A': offsets=(5,10,15), halfwin=2  (current default)
+    scheme 'B': offsets=(8,12,16), halfwin=3  (systematic variant)
+    """
+    if len(points_rc) == 0:
+        return float("nan"), float("nan")
+    if str(scheme).upper() == "B":
+        offsets, halfwin = (8, 12, 16), 3
+    else:
+        offsets, halfwin = (5, 10, 15), 2
+
+    samples: List[float] = []
+    L = len(points_rc)
+    for o in offsets:
+        idx = int(np.clip(o, 0, L - 1))
+        for t in range(-halfwin, halfwin + 1):
+            j = int(np.clip(idx + t, 0, L - 1))
+            r, c = points_rc[j]
+            samples.append(float(dist[int(r), int(c)]))
+    if not samples:
+        return branch_radius(dist, points_rc), float("nan")
+    r_hat = float(np.median(samples))
+    sd_hat = _robust_sd_from_samples(samples)
+    return r_hat, sd_hat
+
+
+
+def branch_angle_sd_deg(points_rc: List[Tuple[int,int]],
+                        origin_rc: Tuple[int,int],
+                        k_first: int = 12) -> float:
+    """
+    Circular robust SD (deg) of chord directions origin→points[1..k], unwrapped,
+    summarized via IQR/1.349.
+    """
+    if len(points_rc) < 3:
+        return float("nan")
+    oy, ox = origin_rc
+    K = min(k_first, len(points_rc))
+    angs = []
+    for j in range(1, K):
+        yy, xx = points_rc[j]
+        v = np.array([float(xx - ox), float(yy - oy)])
+        n = np.linalg.norm(v)
+        if n > 0:
+            angs.append(math.atan2(v[1], v[0]))  # radians
+    if len(angs) < 3:
+        return float("nan")
+    a = np.unwrap(np.asarray(angs, float))       # unwrap
+    a_deg = np.rad2deg(a)
+    q1, q3 = np.percentile(a_deg, [25, 75])
+    return float((q3 - q1) / 1.349)  # robust SD in degrees
+
+
 
 
 # ---------- EPIC ANGLE-ONLY INVERSION ----------
@@ -576,15 +848,21 @@ def m_from_node(r0: float, r1: float, r2: float, theta12: float,
 
 def closure_residual(r0: float, r1: float, r2: float,
                      e0: np.ndarray, e1: np.ndarray, e2: np.ndarray,
-                     m: float) -> float:
+                     m: float, norm_mode: str = "baseline") -> float:
     """
-    R(m) = || r0^m e0 + r1^m e1 + r2^m e2 || / (r1^m + r2^m)
+    R(m) = || r0^m e0 + r1^m e1 + r2^m e2 || / denom
+    denom:
+      - 'baseline' : (r1^m + r2^m)
+      - 'sum'      : (r0^m + r1^m + r2^m)
     """
     a0 = (r0 ** m) * e0
     a1 = (r1 ** m) * e1
     a2 = (r2 ** m) * e2
     num = np.linalg.norm(a0 + a1 + a2)
-    denom = (r1 ** m) + (r2 ** m) + 1e-12
+    if norm_mode == "sum":
+        denom = (r0 ** m) + (r1 ** m) + (r2 ** m) + 1e-12
+    else:
+        denom = (r1 ** m) + (r2 ** m) + 1e-12
     return float(num / denom)
 
 
@@ -701,6 +979,11 @@ class QCConfig:
 
     # NEW: metadata (recorded in CSV; does not affect m)
     px_size_um: float = float("nan")         # optional pixel size (µm/px)
+    tangent_mode: str = "pca"             # 'pca' (default) or 'chord'
+    parent_tie_break: str = "conservative" # 'conservative' (worse R) or 'optimistic' (better R)
+    radius_estimator: str = "A"           # 'A' | 'B' (see branch_radius_stats)
+    r_norm: str = "baseline"              # 'baseline' | 'sum' normalization in R(m)
+
 
 
 
@@ -745,6 +1028,11 @@ class NodeRecord:
     # HELD-OUT: m from (r0,r1,r2,theta12) only; directions held out for R(m)
     m_angleonly: float = float("nan")
     R_m_holdout: float = float("nan")
+    # NEW: measured per-node uncertainties (angle & radii)
+    sd_theta_deg: float = float("nan")
+    sd_r0: float = float("nan")
+    sd_r1: float = float("nan")
+    sd_r2: float = float("nan")
 
 
 def analyze_image(img_path: Path,
@@ -766,8 +1054,8 @@ def analyze_image(img_path: Path,
     raw = io.imread(str(img_path))
     try:
         raw_shape = tuple(raw.shape)
-        raw_dtype  = str(raw.dtype)
-        raw_ext    = img_path.suffix.lower()
+        raw_dtype = str(raw.dtype)
+        raw_ext = img_path.suffix.lower()
     except Exception:
         raw_shape, raw_dtype, raw_ext = ("?",), "?", "?"
     gray = imread_gray(img_path)
@@ -805,11 +1093,11 @@ def analyze_image(img_path: Path,
     skel, dist = skeleton_and_dist(mask)
     G = build_graph_from_skeleton(skel)
 
-    total_px   = int(mask.size)
-    vessel_px  = int(mask.sum())
+    total_px = int(mask.size)
+    vessel_px = int(mask.sum())
     vessel_pct = (vessel_px / max(1, total_px)) * 100.0
-    skel_px    = int(skel.sum())
-    deg_hist   = np.bincount([G.degree[n] for n in G.nodes()], minlength=7)
+    skel_px = int(skel.sum())
+    deg_hist = np.bincount([G.degree[n] for n in G.nodes()], minlength=7)
     deg_summary = f"{{0:{deg_hist[0]},1:{deg_hist[1]},2:{deg_hist[2]},3:{deg_hist[3]},4+:{int(deg_hist[4:].sum())}}}"
     log(
         "    [graph] "
@@ -817,7 +1105,6 @@ def analyze_image(img_path: Path,
         f"skeleton_pixels={skel_px}, nodes={G.number_of_nodes()}, edges={G.number_of_edges()}, "
         f"deg_hist={deg_summary}"
     )
-
 
     # 2) Candidate nodes: degree==3  +  de-dup within qc.dedup_radius_px
     junction_nodes_raw = [n for n in G.nodes if is_bifurcation(G, n)]
@@ -861,11 +1148,16 @@ def analyze_image(img_path: Path,
             theta12 = angle_between(e1, e2)
             angles_deg.append(math.degrees(theta12))
         if len(angles_deg) > 0:
-            angle_min_this_image = max(qc.min_angle_floor_deg, float(np.percentile(angles_deg, qc.angle_auto_pctl)))
+            angle_min_this_image = max(
+                qc.min_angle_floor_deg,
+                float(np.percentile(angles_deg, qc.angle_auto_pctl))
+            )
         else:
             angle_min_this_image = qc.min_angle_floor_deg
-        log(f"    Angle gate (auto): min={angle_min_this_image:.1f}° (floor={qc.min_angle_floor_deg}°, p{qc.angle_auto_pctl} of {len(angles_deg)} candidates)")
-
+        log(
+            f"    Angle gate (auto): min={angle_min_this_image:.1f}° "
+            f"(floor={qc.min_angle_floor_deg}°, p{qc.angle_auto_pctl} of {len(angles_deg)} candidates)"
+        )
 
     # Prepare outputs / stats
     node_records: List[NodeRecord] = []
@@ -885,11 +1177,10 @@ def analyze_image(img_path: Path,
     }
 
     # QC thresholds: loose vs. strict (optional)
-    QC_RM_MAX_LOOSE   = 0.85
+    QC_RM_MAX_LOOSE = 0.85
     QC_CRES_MAX_LOOSE = 0.35
-    QC_RM_MAX_STRICT   = 0.55 if qc.strict_qc else QC_RM_MAX_LOOSE
+    QC_RM_MAX_STRICT = 0.55 if qc.strict_qc else QC_RM_MAX_LOOSE
     QC_CRES_MAX_STRICT = 0.15 if qc.strict_qc else QC_CRES_MAX_LOOSE
-
 
     # Helper for overlay coloring
     def draw_point(y, x, color_rgb):
@@ -909,15 +1200,18 @@ def analyze_image(img_path: Path,
             reasons["not_deg3"] += 1
             continue
 
-         # For each neighbor, walk outward (robust handling for short branches)
+        # For each neighbor, walk outward (robust handling for short branches)
         branch_paths = []
-        branch_dirs  = []
+        branch_dirs = []
         branch_radii = []
         branch_svdratios = []
+        branch_ang_sds = []   # per-branch angle SDs
+        radius_sds = []       # per-branch radius SDs
 
         valid = True
 
-        def _greedy_extend(skel_arr: np.ndarray, start_rc: Tuple[int,int], init_vec: np.ndarray, steps: int = 12) -> List[Tuple[int,int]]:
+        def _greedy_extend(skel_arr: np.ndarray, start_rc: Tuple[int, int],
+                           init_vec: np.ndarray, steps: int = 12) -> List[Tuple[int, int]]:
             """
             Greedily extend a polyline on the skeleton for a few steps, preferring the
             8-neighbor that best aligns with init_vec at each step. Avoid immediate backtracking.
@@ -952,8 +1246,8 @@ def analyze_image(img_path: Path,
                 path.append(best)
             return path
 
-        def _tangent_consistency_ok(points_rc: List[Tuple[int,int]],
-                                    origin_rc: Tuple[int,int],
+        def _tangent_consistency_ok(points_rc: List[Tuple[int, int]],
+                                    origin_rc: Tuple[int, int],
                                     deg_thresh: float = 25.0,
                                     k_first: int = 8) -> bool:
             """
@@ -993,7 +1287,10 @@ def analyze_image(img_path: Path,
                 p0 = np.array([rc0[1], rc0[0]], dtype=np.float32)
                 pL = np.array([pts[-1][1], pts[-1][0]], dtype=np.float32)
                 init_vec = pL - p0
-                ext = _greedy_extend(skel, pts[-1], init_vec, steps=max(8, qc.min_branch_len_px - path_len))
+                ext = _greedy_extend(
+                    skel, pts[-1], init_vec,
+                    steps=max(8, qc.min_branch_len_px - path_len)
+                )
                 if len(ext) > 1:
                     # Append new unique points (avoid duplicating the last one)
                     for rrcc in ext[1:]:
@@ -1010,12 +1307,14 @@ def analyze_image(img_path: Path,
                 log(f"      [drop] branch too short (<3 px): len={path_len}")
                 continue
 
-            # Tangent over fixed arc + PCA quality (with robust fallback)
+            # Tangent over fixed arc honoring qc.tangent_mode
             pts_for_tan = pts[:qc.tangent_len_px]
-            dvec, sratio = fit_tangent(pts_for_tan, origin_rc=rc0)
 
-            def _chord_direction(points_rc, origin_rc):
-                # use the farthest available point within the window as a chord
+            def _chord_direction(points_rc: List[Tuple[int, int]],
+                                 origin_rc: Tuple[int, int]) -> np.ndarray:
+                """
+                Use a simple chord from the junction to a far point as a surrogate tangent.
+                """
                 j = min(len(points_rc) - 1, max(8, qc.tangent_len_px) - 1)
                 yy, xx = points_rc[j]
                 oy, ox = origin_rc
@@ -1023,35 +1322,78 @@ def analyze_image(img_path: Path,
                 n = np.linalg.norm(v)
                 return (v / (n + 1e-12)) if n > 0 else np.array([np.nan, np.nan], dtype=np.float32)
 
-            bad = (not np.all(np.isfinite(dvec))) or (np.linalg.norm(dvec) < 0.5) or (sratio < qc.svd_ratio_min) \
-                  or (not _tangent_consistency_ok(pts_for_tan, rc0, deg_thresh=qc.max_tangent_wander_deg, k_first=8))
-            if bad:
-                # Fallback: accept a chord direction if the branch is long enough AND consistent
-                if path_len >= max(8, qc.tangent_len_px // 2):
-                    dvec_fb = _chord_direction(pts_for_tan, rc0)
-                    if np.all(np.isfinite(dvec_fb)) and np.linalg.norm(dvec_fb) >= 0.5 \
-                       and _tangent_consistency_ok(pts_for_tan, rc0, deg_thresh=qc.max_tangent_wander_deg, k_first=8):
-                        dvec = dvec_fb
-                        sratio = max(sratio, qc.svd_ratio_min)
-                        log(f"      [fallback] using chord direction; len={path_len}, svd_ratio≈{sratio:.2f}")
+            if str(qc.tangent_mode).lower() == "chord":
+                dvec = _chord_direction(pts_for_tan, rc0)
+                sratio = qc.svd_ratio_min  # treat as "good enough" for gating
+                if not _tangent_consistency_ok(pts_for_tan, rc0,
+                                               deg_thresh=qc.max_tangent_wander_deg,
+                                               k_first=8):
+                    valid = False
+                    reasons["bad_tangent"] += 1
+                    if save_debug:
+                        draw_point(*rc0, [1.0, 0.0, 0.0])
+                    log(f"      [drop] chord direction inconsistent; len={len(pts_for_tan)}")
+                    continue
+            else:
+                dvec, sratio = fit_tangent(pts_for_tan, origin_rc=rc0)
+                bad = (
+                    (not np.all(np.isfinite(dvec)))
+                    or (np.linalg.norm(dvec) < 0.5)
+                    or (sratio < qc.svd_ratio_min)
+                    or (not _tangent_consistency_ok(
+                        pts_for_tan, rc0,
+                        deg_thresh=qc.max_tangent_wander_deg,
+                        k_first=8
+                    ))
+                )
+                if bad:
+                    # Fallback: accept a chord direction if the branch is long enough AND consistent
+                    if path_len >= max(8, qc.tangent_len_px // 2):
+                        dvec_fb = _chord_direction(pts_for_tan, rc0)
+                        if (
+                            np.all(np.isfinite(dvec_fb))
+                            and np.linalg.norm(dvec_fb) >= 0.5
+                            and _tangent_consistency_ok(
+                                pts_for_tan, rc0,
+                                deg_thresh=qc.max_tangent_wander_deg,
+                                k_first=8
+                            )
+                        ):
+                            dvec = dvec_fb
+                            sratio = max(sratio, qc.svd_ratio_min)
+                            log(
+                                f"      [fallback] using chord direction; "
+                                f"len={path_len}, svd_ratio≈{sratio:.2f}"
+                            )
+                        else:
+                            valid = False
+                            reasons["bad_tangent"] += 1
+                            if save_debug:
+                                draw_point(*rc0, [1.0, 0.0, 0.0])  # red
+                            log(
+                                f"      [drop] bad/unstable tangent; "
+                                f"len={path_len}, svd_ratio={sratio:.2f}"
+                            )
+                            continue
                     else:
                         valid = False
                         reasons["bad_tangent"] += 1
                         if save_debug:
                             draw_point(*rc0, [1.0, 0.0, 0.0])  # red
-                        log(f"      [drop] bad/unstable tangent; len={path_len}, svd_ratio={sratio:.2f}")
+                        log(
+                            f"      [drop] bad tangent (too short for fallback); "
+                            f"len={path_len}, svd_ratio={sratio:.2f}"
+                        )
                         continue
-                else:
-                    valid = False
-                    reasons["bad_tangent"] += 1
-                    if save_debug:
-                        draw_point(*rc0, [1.0, 0.0, 0.0])  # red
-                    log(f"      [drop] bad tangent (too short for fallback); len={path_len}, svd_ratio={sratio:.2f}")
-                    continue
 
+            # Per-branch angle SD (deg) from the first-k chord directions
+            ang_sd = branch_angle_sd_deg(
+                pts_for_tan, rc0,
+                k_first=min(12, qc.tangent_len_px)
+            )
 
-            # Robust radius
-            rad = branch_radius(dist, pts, k=min(8, max(3, path_len)))
+            # Robust radius + robust SD from EDT samples
+            rad, rad_sd = branch_radius_stats(dist, pts, scheme=qc.radius_estimator)
             if not np.isfinite(rad) or rad < qc.min_radius_px:
                 valid = False
                 reasons["small_radius"] += 1
@@ -1060,15 +1402,19 @@ def analyze_image(img_path: Path,
                 log(f"      [drop] small radius; r≈{rad:.2f}px, len={path_len}")
                 continue
 
-
             # Soft accept short-but-usable branches: keep them but log for transparency
             if path_len < qc.min_branch_len_px:
-                log(f"      [soft] short branch accepted: len={path_len}px < min={qc.min_branch_len_px}px; r≈{rad:.2f}px")
+                log(
+                    f"      [soft] short branch accepted: len={path_len}px "
+                    f"< min={qc.min_branch_len_px}px; r≈{rad:.2f}px"
+                )
 
             branch_paths.append(pts)
             branch_dirs.append(dvec)
             branch_radii.append(rad)
             branch_svdratios.append(float(sratio))
+            branch_ang_sds.append(float(ang_sd))
+            radius_sds.append(float(rad_sd))
 
         if not valid or len(branch_dirs) != 3:
             # already counted reason above
@@ -1087,21 +1433,29 @@ def analyze_image(img_path: Path,
 
         # Alternate assignment: swap parent with the fatter daughter (conservative cross-check)
         radii_arr = np.array(branch_radii, dtype=float)
-        idx_fat_daughter = int(idx_daughters_primary[int(np.argmax(radii_arr[idx_daughters_primary]))])
+        idx_fat_daughter = int(
+            idx_daughters_primary[int(np.argmax(radii_arr[idx_daughters_primary]))]
+        )
         idx_parent_alt = idx_fat_daughter
         idx_daughters_alt = [j for j in range(3) if j != idx_parent_alt]
 
         def _solve_for_assignment(i_par: int, i_daus: List[int]):
             ee0, ee1, ee2 = branch_dirs[i_par], branch_dirs[i_daus[0]], branch_dirs[i_daus[1]]
-            rr0, rr1, rr2 = float(branch_radii[i_par]), float(branch_radii[i_daus[0]]), float(branch_radii[i_daus[1]])
+            rr0 = float(branch_radii[i_par])
+            rr1 = float(branch_radii[i_daus[0]])
+            rr2 = float(branch_radii[i_daus[1]])
             th12 = angle_between(ee1, ee2)
             deg12_ = math.degrees(th12)
 
-            # Soft rescue: if θ12 is within a small margin outside the gate, clamp to the nearest bound
+            # Soft rescue: if θ12 is within a small margin outside the gate, clamp to nearest bound
             used_deg12 = deg12_
             soft_used = False
             if not (angle_min_this_image <= deg12_ <= qc.max_angle_deg):
-                if (angle_min_this_image - float(qc.angle_soft_margin_deg)) <= deg12_ <= (qc.max_angle_deg + float(qc.angle_soft_margin_deg)):
+                if (
+                    (angle_min_this_image - float(qc.angle_soft_margin_deg))
+                    <= deg12_
+                    <= (qc.max_angle_deg + float(qc.angle_soft_margin_deg))
+                ):
                     used_deg12 = float(np.clip(deg12_, angle_min_this_image, qc.max_angle_deg))
                     th12 = math.radians(used_deg12)
                     soft_used = True
@@ -1111,51 +1465,80 @@ def analyze_image(img_path: Path,
             m_candidates, m_source = [], []
 
             # Solver
-            m_sol = m_from_node(rr0, rr1, rr2, th12,
-                                m_min=qc.m_bracket[0], m_max=qc.m_bracket[1],
-                                tol=1e-6, iters=64)
+            m_sol = m_from_node(
+                rr0, rr1, rr2, th12,
+                m_min=qc.m_bracket[0], m_max=qc.m_bracket[1],
+                tol=1e-6, iters=64
+            )
             if np.isfinite(m_sol) and qc.m_bracket[0] <= m_sol <= qc.m_bracket[1]:
-                m_candidates.append(float(m_sol)); m_source.append("solver")
+                m_candidates.append(float(m_sol))
+                m_source.append("solver")
 
             # Symmetric (if daughters comparable)
             ratio = max(rr1, rr2) / max(1e-9, min(rr1, rr2))
             if ratio <= qc.symmetric_ratio_tol:
                 m_sym = m_from_angle_symmetric(th12, n=4.0)
                 if np.isfinite(m_sym) and qc.m_bracket[0] <= m_sym <= qc.m_bracket[1]:
-                    m_candidates.append(float(m_sym)); m_source.append("symmetric")
+                    m_candidates.append(float(m_sym))
+                    m_source.append("symmetric")
 
             # Grid minimizer of |equation residual|
             def eq_res(mm: float) -> float:
-                return abs((rr0**(2.0*mm)) - (rr1**(2.0*mm)) - (rr2**(2.0*mm)) - 2.0*math.cos(th12)*(rr1**mm)*(rr2**mm))
+                return abs(
+                    (rr0**(2.0 * mm))
+                    - (rr1**(2.0 * mm))
+                    - (rr2**(2.0 * mm))
+                    - 2.0 * math.cos(th12) * (rr1**mm) * (rr2**mm)
+                )
+
             grid = np.linspace(qc.m_bracket[0], qc.m_bracket[1], 121, dtype=np.float64)
             vals = np.array([eq_res(mm) for mm in grid])
             m_grid = float(grid[int(np.argmin(vals))])
             if np.isfinite(m_grid) and qc.m_bracket[0] <= m_grid <= qc.m_bracket[1]:
-                m_candidates.append(m_grid); m_source.append("grid")
+                m_candidates.append(m_grid)
+                m_source.append("grid")
 
             if len(m_candidates) == 0:
                 return None
 
             best_idx, best_R = -1, np.inf
             for ii, m_c in enumerate(m_candidates):
-                R_c = closure_residual(rr0, rr1, rr2, ee0, ee1, ee2, m_c)
+                R_c = closure_residual(
+                    rr0, rr1, rr2, ee0, ee1, ee2, m_c,
+                    norm_mode=qc.r_norm
+                )
                 if R_c < best_R:
-                    best_R = R_c; best_idx = ii
-            m_fin = float(m_candidates[best_idx]); src_fin = str(m_source[best_idx])
-            Rm = closure_residual(rr0, rr1, rr2, ee0, ee1, ee2, m_fin)
+                    best_R = R_c
+                    best_idx = ii
+
+            m_fin = float(m_candidates[best_idx])
+            src_fin = str(m_source[best_idx])
+            Rm = closure_residual(
+                rr0, rr1, rr2, ee0, ee1, ee2, m_fin,
+                norm_mode=qc.r_norm
+            )
             c_vec, cresid = tariffs_from_nullspace(rr0, rr1, rr2, ee0, ee1, ee2, m_fin)
 
-            qc_pass_loose  = ((Rm < QC_RM_MAX_LOOSE) or (cresid < QC_CRES_MAX_LOOSE))
+            qc_pass_loose = ((Rm < QC_RM_MAX_LOOSE) or (cresid < QC_CRES_MAX_LOOSE))
             qc_pass_strict = ((Rm < QC_RM_MAX_STRICT) and (cresid < QC_CRES_MAX_STRICT))
             return {
-                "e0": ee0, "e1": ee1, "e2": ee2, "r0": rr0, "r1": rr1, "r2": rr2,
-                "theta12_deg": deg12_, "m": m_fin, "Rm": Rm, "c": c_vec, "cresid": cresid,
-                "qc_loose": qc_pass_loose, "qc_strict": qc_pass_strict, "best_R": best_R,
-                "m_source": src_fin, "soft_clamp": soft_used, "theta12_used_deg": used_deg12
+                "e0": ee0, "e1": ee1, "e2": ee2,
+                "r0": rr0, "r1": rr1, "r2": rr2,
+                "theta12_deg": deg12_,
+                "m": m_fin,
+                "Rm": Rm,
+                "c": c_vec,
+                "cresid": cresid,
+                "qc_loose": qc_pass_loose,
+                "qc_strict": qc_pass_strict,
+                "best_R": best_R,
+                "m_source": src_fin,
+                "soft_clamp": soft_used,
+                "theta12_used_deg": used_deg12
             }
 
         res_primary = _solve_for_assignment(idx_parent_primary, idx_daughters_primary)
-        res_alt     = _solve_for_assignment(idx_parent_alt, idx_daughters_alt)
+        res_alt = _solve_for_assignment(idx_parent_alt, idx_daughters_alt)
 
         if (res_primary is None) and (res_alt is None):
             reasons["angle_out_of_range"] += 1  # both gated out
@@ -1163,75 +1546,117 @@ def analyze_image(img_path: Path,
                 draw_point(*rc0, [1.0, 0.0, 1.0])
             continue
 
-        # If both exist and disagree on who is parent, keep the WORSE R(m) (conservative)
-        parent_ambiguous = (idx_parent_primary != idx_parent_alt) and (res_primary is not None) and (res_alt is not None)
-        chosen = None
+        parent_ambiguous = (
+            idx_parent_primary != idx_parent_alt
+            and (res_primary is not None)
+            and (res_alt is not None)
+        )
         if res_primary is not None and res_alt is not None:
-            chosen = res_primary if res_primary["Rm"] >= res_alt["Rm"] else res_alt
+            if str(qc.parent_tie_break).lower() == "optimistic":
+                chosen = res_primary if res_primary["Rm"] <= res_alt["Rm"] else res_alt
+            else:
+                chosen = res_primary if res_primary["Rm"] >= res_alt["Rm"] else res_alt
         else:
             chosen = res_primary if res_primary is not None else res_alt
 
         e0, e1, e2 = chosen["e0"], chosen["e1"], chosen["e2"]
         r0, r1, r2 = chosen["r0"], chosen["r1"], chosen["r2"]
-        deg12, m, Rm = chosen["theta12_deg"], chosen["m"], chosen["Rm"]
+        deg12 = chosen["theta12_deg"]
+        m = chosen["m"]
+        Rm = chosen["Rm"]
         c_vec, cresid = chosen["c"], chosen["cresid"]
         qc_pass_loose, qc_pass_strict = chosen["qc_loose"], chosen["qc_strict"]
         best_R, m_src = chosen["best_R"], chosen["m_source"]
-        
+
         # --- HELD-OUT angle-only m (no directions used to choose m) ---
         m_ao, _ao_src = angle_only_m_deterministic(
             r0, r1, r2, math.radians(deg12),
             m_min=qc.m_bracket[0], m_max=qc.m_bracket[1],
             symmetric_ratio_tol=qc.symmetric_ratio_tol
         )
-        Rm_ao = closure_residual(r0, r1, r2, e0, e1, e2, m_ao) if np.isfinite(m_ao) else float("nan")
-
+        Rm_ao = (
+            closure_residual(r0, r1, r2, e0, e1, e2, m_ao, norm_mode=qc.r_norm)
+            if np.isfinite(m_ao) else float("nan")
+        )
 
         # map chosen e-vectors back to branch indices to get SVD ratios
-        def _idx_of_vec(vec):
+        def _idx_of_vec(vec: np.ndarray) -> int:
             dists = [np.linalg.norm(np.asarray(bv) - np.asarray(vec)) for bv in branch_dirs]
             return int(np.argmin(dists)) if len(dists) == 3 else 0
-        i0 = _idx_of_vec(e0); i1 = _idx_of_vec(e1); i2 = _idx_of_vec(e2)
+
+        i0 = _idx_of_vec(e0)
+        i1 = _idx_of_vec(e1)
+        i2 = _idx_of_vec(e2)
         svd0 = float(branch_svdratios[i0]) if len(branch_svdratios) == 3 else float("nan")
         svd1 = float(branch_svdratios[i1]) if len(branch_svdratios) == 3 else float("nan")
         svd2 = float(branch_svdratios[i2]) if len(branch_svdratios) == 3 else float("nan")
 
-        node_records.append(NodeRecord(
-            dataset=dataset,
-            image_id=image_id,
-            node_id=node_counter,
-            yx=(int(rc0[0]), int(rc0[1])),
-            r0=float(r0), r1=float(r1), r2=float(r2),
-            theta12_deg=float(deg12),
-            m_node=float(m),
-            R_m=float(Rm),
-            c0=float(c_vec[0]), c1=float(c_vec[1]), c2=float(c_vec[2]),
-            tariff_residual=float(cresid),
-            qc_pass=qc_pass_loose,
-            qc_pass_strict=qc_pass_strict,
-            e0x=float(e0[0]), e0y=float(e0[1]),
-            e1x=float(e1[0]), e1y=float(e1[1]),
-            e2x=float(e2[0]), e2y=float(e2[1]),
-            svd_ratio_e0=svd0, svd_ratio_e1=svd1, svd_ratio_e2=svd2,
-            seg_variant=str(seg_meta.get("seg_variant", "unknown")),
-            seg_thresh_type=str(seg_meta.get("thresh_type", "")),
-            seg_thresh_value=float(seg_meta.get("thresh_value", float("nan"))),
-            m_source_chosen=str(m_src),
-            parent_ambiguous=bool(parent_ambiguous),
-            px_size_um=float(qc.px_size_um),
-            note=f"m_sources_evaluated=['solver','symmetric','grid']" + ("; soft_angle_clamp" if bool(chosen.get('soft_clamp', False)) else ""),
-            m_angleonly=float(m_ao),
-            R_m_holdout=float(Rm_ao),
-        ))
+        # Per-node SDs (angle combines daughters; radii per branch)
+        try:
+            ang_sd_i1 = float(branch_ang_sds[i1]) if len(branch_ang_sds) == 3 else float("nan")
+            ang_sd_i2 = float(branch_ang_sds[i2]) if len(branch_ang_sds) == 3 else float("nan")
+            sd_theta_deg_node = float(np.sqrt((ang_sd_i1**2 + ang_sd_i2**2) / 2.0))
+        except Exception:
+            sd_theta_deg_node = float("nan")
 
+        sd_r0_node = float(radius_sds[i0]) if len(radius_sds) == 3 else float("nan")
+        sd_r1_node = float(radius_sds[i1]) if len(radius_sds) == 3 else float("nan")
+        sd_r2_node = float(radius_sds[i2]) if len(radius_sds) == 3 else float("nan")
+
+        node_records.append(
+            NodeRecord(
+                dataset=dataset,
+                image_id=image_id,
+                node_id=node_counter,
+                yx=(int(rc0[0]), int(rc0[1])),
+                r0=float(r0),
+                r1=float(r1),
+                r2=float(r2),
+                theta12_deg=float(deg12),
+                m_node=float(m),
+                R_m=float(Rm),
+                c0=float(c_vec[0]),
+                c1=float(c_vec[1]),
+                c2=float(c_vec[2]),
+                tariff_residual=float(cresid),
+                qc_pass=qc_pass_loose,
+                qc_pass_strict=qc_pass_strict,
+                e0x=float(e0[0]),
+                e0y=float(e0[1]),
+                e1x=float(e1[0]),
+                e1y=float(e1[1]),
+                e2x=float(e2[0]),
+                e2y=float(e2[1]),
+                svd_ratio_e0=svd0,
+                svd_ratio_e1=svd1,
+                svd_ratio_e2=svd2,
+                seg_variant=str(seg_meta.get("seg_variant", "unknown")),
+                seg_thresh_type=str(seg_meta.get("thresh_type", "")),
+                seg_thresh_value=float(seg_meta.get("thresh_value", float("nan"))),
+                m_source_chosen=str(m_src),
+                parent_ambiguous=bool(parent_ambiguous),
+                px_size_um=float(qc.px_size_um),
+                note="m_sources_evaluated=['solver','symmetric','grid']"
+                     + ("; soft_angle_clamp" if bool(chosen.get("soft_clamp", False)) else ""),
+                m_angleonly=float(m_ao),
+                R_m_holdout=float(Rm_ao),
+                sd_theta_deg=float(sd_theta_deg_node),
+                sd_r0=float(sd_r0_node),
+                sd_r1=float(sd_r1_node),
+                sd_r2=float(sd_r2_node),
+            )
+        )
 
         node_counter += 1
 
         # 3f) Debug overlay color by QC (green=strict pass, orange=loose-only pass, red=fail)
         if save_debug:
-            color_rgb = [0.0, 1.0, 0.0] if qc_pass_strict else ([1.0, 0.65, 0.0] if qc_pass_loose else [1.0, 0.0, 0.0])
+            color_rgb = (
+                [0.0, 1.0, 0.0]
+                if qc_pass_strict
+                else ([1.0, 0.65, 0.0] if qc_pass_loose else [1.0, 0.0, 0.0])
+            )
             draw_point(*rc0, color_rgb)
-
 
     kept = len(node_records)
     diag = {
@@ -1243,22 +1668,24 @@ def analyze_image(img_path: Path,
         "angle_gate_min_deg": float(angle_min_this_image),
         "skip_reasons": reasons,
         "qc_thresholds": {
-            "loose":  {"R_m_max": QC_RM_MAX_LOOSE,  "c_res_max": QC_CRES_MAX_LOOSE},
+            "loose": {"R_m_max": QC_RM_MAX_LOOSE, "c_res_max": QC_CRES_MAX_LOOSE},
             "strict": {"R_m_max": QC_RM_MAX_STRICT, "c_res_max": QC_CRES_MAX_STRICT},
         },
     }
 
     # Transparent summary for this image
-    log(f"    Image summary: kept={kept}/{len(junction_nodes)} | "
+    log(
+        f"    Image summary: kept={kept}/{len(junction_nodes)} | "
         f"skips: short_branch={reasons['short_branch']}, bad_tangent={reasons['bad_tangent']}, "
         f"small_radius={reasons['small_radius']}, angle_out={reasons['angle_out_of_range']}, "
-        f"no_m={reasons['no_m_candidate']}, qc_fail={reasons['qc_fail']}")
+        f"no_m={reasons['no_m_candidate']}, qc_fail={reasons['qc_fail']}"
+    )
 
     # 5) Optional overlay save
     if save_debug and overlay is not None:
         fig = plt.figure(figsize=(10, 10))
         plt.imshow(overlay)
-        plt.axis('off')
+        plt.axis("off")
         plt.title(f"{dataset}/{image_id} — junction QC overlay (kept {kept})")
         save_png(fig, (out_dir / "figures" / dataset / f"{image_id}__skeleton_overlay.png"))
 
@@ -1353,7 +1780,12 @@ def plot_residual_distribution(
     R_col: str = "R_m",               # e.g., "R_m_holdout"
     gaussian_jitter_sd: float = 0.0,  # SD as fraction of radius (indep. Gaussian)
     reinvert_m_on_jitter: bool = False,
+    norm_mode: str = "baseline",
+    # NEW: panel filter
+    panel_filter: str = "all",
 ):
+
+
     """
     Panel B — Residuals with uncertainty and rich controls.
 
@@ -1366,6 +1798,19 @@ def plot_residual_distribution(
     """
     # Back-compat: if gaussian_jitter_sd not provided but jitter_frac was passed,
     # route jitter_frac into gaussian_jitter_sd so the dotted median is drawn.
+        # Empty dataset guard + policy filter
+    if df is None or df.empty:
+        write_empty_reports(dataset, reason="no_kept_nodes")
+        return
+    df = _apply_panel_filter(df, panel_filter)
+    if df.empty:
+        write_empty_reports(dataset, reason="no_kept_nodes_after_filter")
+        return
+
+    # metric name for labels (held-out vs in-sample)
+    metric_name = (R_col if (isinstance(R_col, str) and (R_col in df.columns)) else "R_m")
+
+
     if float(gaussian_jitter_sd) <= 0.0 and float(jitter_frac) > 0.0:
         gaussian_jitter_sd = float(jitter_frac)
 
@@ -1425,18 +1870,19 @@ def plot_residual_distribution(
         bbox=dict(facecolor="white", alpha=0.90, edgecolor="none", boxstyle="round,pad=0.25"),
     )
 
-    ax.set_xlabel("Closure residual R(m)")
+    ax.set_xlabel(f"Closure residual {metric_name}")
     ax.set_ylabel("Density")
-    ax.set_title(f"Closure residual R(m) — {dataset}")
+    ax.set_title(f"Closure residual {metric_name} — {dataset}")
 
     if not have_dirs:
-        ax.set_xlabel("closure residual R(m)")
+        ax.set_xlabel(f"Closure residual {metric_name}")
         ax.set_ylabel("count")
-        ax.set_title(f"Closure residual R(m) — {dataset}")
+        ax.set_title(f"Closure residual {metric_name} — {dataset}")
         ax.legend(loc="best")
         save_png(fig, FIG_ROOT / dataset / f"dataset_{dataset}__residual_hist.png")
         log("[NULL-TEST] Direction columns not found; plotted observed histogram with bootstrap CI only.")
         return
+
 
     rng = np.random.default_rng(int(seed))
 
@@ -1444,7 +1890,6 @@ def plot_residual_distribution(
         n = np.linalg.norm(V, axis=1, keepdims=True) + 1e-12
         return V / n
 
-    # Accept scalar or per-node m
     def _closure_residual_batch(r0, r1, r2, e0, e1, e2, m):
         m_arr = np.asarray(m, dtype=float)
         if m_arr.ndim == 0:
@@ -1452,15 +1897,22 @@ def plot_residual_distribution(
             a1 = (np.power(r1, m_arr))[:, None] * e1
             a2 = (np.power(r2, m_arr))[:, None] * e2
             num = np.linalg.norm(a0 + a1 + a2, axis=1)
-            denom = (np.power(r1, m_arr)) + (np.power(r2, m_arr)) + 1e-12
+            if norm_mode == "sum":
+                denom = (np.power(r0, m_arr)) + (np.power(r1, m_arr)) + (np.power(r2, m_arr)) + 1e-12
+            else:
+                denom = (np.power(r1, m_arr)) + (np.power(r2, m_arr)) + 1e-12
             return num / denom
         else:
             a0 = (np.power(r0, m_arr))[:, None] * e0
             a1 = (np.power(r1, m_arr))[:, None] * e1
             a2 = (np.power(r2, m_arr))[:, None] * e2
             num = np.linalg.norm(a0 + a1 + a2, axis=1)
-            denom = (np.power(r1, m_arr)) + (np.power(r2, m_arr)) + 1e-12
+            if norm_mode == "sum":
+                denom = (np.power(r0, m_arr)) + (np.power(r1, m_arr)) + (np.power(r2, m_arr)) + 1e-12
+            else:
+                denom = (np.power(r1, m_arr)) + (np.power(r2, m_arr)) + 1e-12
             return num / denom
+
 
     # Arrays
     r0a = df["r0"].astype(float).values
@@ -1577,21 +2029,46 @@ def plot_residual_distribution(
         delta = _cliffs_delta(R_obs, R_null_agg)
         return p_med, p_frac, delta
 
+    # Image-clustered median & CI at the image level
+    try:
+        vcol = R_col if R_col in df.columns else "R_m"
+        imgc = image_cluster_stats(df, value_col=vcol, B=int(boot), seed=seed)
+    except Exception:
+        imgc = {"median": float("nan"), "ci": (float("nan"), float("nan")),
+                "n_img": 0, "share_img_Rlt055": float("nan"), "share_img_Rlt085": float("nan")}
+
     lines = [f"DATASET: {dataset}",
-             f"N nodes: {len(R_obs)}",
-             f"Observed: median={obs_median:.6f} [95% CI {ci_lo:.6f},{ci_hi:.6f}], frac<0.55={obs_frac055:.6f}",
+             f"Image-clustered median={imgc['median']:.6f} [95% CI {imgc['ci'][0]:.6f},{imgc['ci'][1]:.6f}] | N_img={imgc['n_img']} | share_img[R<0.55]={imgc['share_img_Rlt055']:.3f}, R<0.85={imgc['share_img_Rlt085']:.3f}",
+             f"N nodes: {len(R_obs)} (metric={metric_name})",
+             f"Observed({metric_name}): median={obs_median:.6f} [95% CI {ci_lo:.6f},{ci_hi:.6f}], frac<0.55={obs_frac055:.6f}",
              f"Null reps per control: {int(n_perm)}"]
 
+
     legend_done = False
+    p_floor = 1.0 / (float(n_perm) + 1.0)
     for key, (med_null, frac_null, Ragg) in results.items():
         p_med, p_frac, delta = _pvals_and_delta(med_null, frac_null, Ragg)
         Ragg_finite = Ragg[np.isfinite(Ragg)]
         ax.hist(Ragg_finite, bins=40, histtype="step", linewidth=1.25, label=f"null ({key})", density=True)
-        pm_str = "< 1e-12" if p_med < 1e-12 else f"= {p_med:.6g}"
-        pf_str = "< 1e-12" if p_frac < 1e-12 else f"= {p_frac:.6g}"
-        lines.append(f"{key}: p_median(lower){pm_str}, p_frac<0.55(higher){pf_str}, Cliff's δ={delta:.6f}")
+        pm_str = (f"≥ {p_floor:.3g}" if p_med  <= p_floor else f"= {p_med:.6g}")
+        pf_str = (f"≥ {p_floor:.3g}" if p_frac <= p_floor else f"= {p_frac:.6g}")
+
+        if key == "shuffle":
+            medn = float(np.median(med_null))
+            d_med = float(obs_median - medn)
+            pm_disp = (f"≥ {p_floor:.3g}" if p_med  <= p_floor else f"{p_med:.6g}")
+            pf_disp = (f"≥ {p_floor:.3g}" if p_frac <= p_floor else f"{p_frac:.6g}")
+            lines.append(
+                f"shuffle: med_null={medn:.6f}, Δmedian(obs-null)={d_med:.6f}, "
+                f"p_median(lower)={pm_disp}, p_frac<0.55(higher)={pf_disp}, "
+                f"Cliff's δ={delta:.6f} ({cliffs_delta_label(delta)})"
+            )
+
+        else:
+            lines.append(f"{key}: p_median(lower){pm_str}, p_frac<0.55(higher){pf_str}, Cliff's δ={delta:.6f}")
         legend_done = True
         xlim_collect.append(Ragg_finite)
+
 
     # --- Gaussian jitter (independent per radius), optional re-inversion of m under jitter ---
     if gaussian_jitter_sd is not None and float(gaussian_jitter_sd) > 0:
@@ -1622,10 +2099,11 @@ def plot_residual_distribution(
     except Exception:
         pass
 
-    ax.set_xlabel("closure residual R(m)")
-    ax.set_ylabel("density")
+    ax.set_xlabel(f"Closure residual {metric_name}")
+    ax.set_ylabel("Density")
     ax.set_ylim(bottom=0)
-    ax.set_title(f"Closure residual R(m) — {dataset}")
+    ax.set_title(f"Closure residual {metric_name} — {dataset}")
+
     if legend_done or (gaussian_jitter_sd and gaussian_jitter_sd > 0):
         ax.legend(
             loc="upper right",
@@ -1705,7 +2183,8 @@ def plot_residual_distribution(
 
 
 def plot_fixed_m_baselines(df: pd.DataFrame, dataset: str,
-                           fixed_ms=(2.0, 1.0), grid_ms=np.linspace(0.2, 4.0, 381)):
+                           fixed_ms=(2.0, 1.0), grid_ms=np.linspace(0.2, 4.0, 381),
+                           norm_mode: str = "baseline"):
     """
     Panel B — Baselines (fixed m) + Radii-only additive test.
 
@@ -1764,8 +2243,11 @@ def plot_fixed_m_baselines(df: pd.DataFrame, dataset: str,
         a1 = (np.power(r1, m))[:, None] * e1
         a2 = (np.power(r2, m))[:, None] * e2
         num = np.linalg.norm(a0 + a1 + a2, axis=1)
-        denom = (np.power(r1, m)) + (np.power(r2, m)) + 1e-12
-        return num / denom
+        den = (np.power(r1, m)) + (np.power(r2, m)) + 1e-12
+        if norm_mode == "sum":
+            den = (np.power(r0, m)) + den
+        return num / den
+
 
     def eq_misfit(m):
         c = np.cos(t12)
@@ -1953,21 +2435,23 @@ def compute_per_node_uncertainty(
     dataset: str,
     n_draws: int = 500,
     seed: int = 13,
-    radius_sd_frac: float = 0.05,  # conservative default when local EDT variability not recorded
+    radius_sd_frac: float = 0.05,  # fallback when per-node SDs are unavailable
 ):
     """
-    STEP 3 — Monte-Carlo per-node uncertainty on m (angle-only inversion):
-      - Jitter radii by multiplicative Gaussian SD = radius_sd_frac * r.
-      - Jitter angles via per-branch tangent SVD ratio: SD_deg = min(15, 60/svd_ratio).
-      - For each redraw, recompute m from (r0,r1,r2,theta12).
-      - Writes:
-          reports/<DATASET>/UNCERTAINTY__nodes.csv  (m_hat, m_lo, m_hi, CI_width, at_edge_before, at_edge_after)
-          figures/<DATASET>/dataset_<DATASET>__m_uncertainty_forest.png
-      - Adds summary lines into SUMMARY__*.txt are produced by summarize_and_write (reads counts).
-    Pass/Fail (reported at end of CSV header):
-      - ≥ 60% of bracket-edge nodes move off the edge after uncertainty;
-      - Median CI half-width ≤ 0.35.
+    STEP 3 — Per-node 95% CIs for m.
+    Priority: analytic delta method (implicit-function theorem) using measured per-node SDs,
+    with a single global scale τ fitted by a small positive control to achieve ~95% coverage.
+    Fallback: legacy Monte-Carlo jitter if SD columns are missing.
+
+    Writes:
+      reports/<DATASET>/UNCERTAINTY__nodes.csv  (m_hat, m_lo, m_hi, CI_width, at_edge_before, at_edge_after)
+      figures/<DATASET>/dataset_<DATASET>__m_uncertainty_forest.png
+
+    PASS if:
+      • ≥ 60% of bracket-edge nodes move strictly interior under uncertainty, and
+      • median 95% half-width ≤ 0.35.
     """
+
     if len(df) == 0:
         log("[UNCERTAINTY] empty DF; skipping")
         return
@@ -1975,79 +2459,147 @@ def compute_per_node_uncertainty(
     rng = np.random.default_rng(int(seed))
     dataset_base = dataset.split("__", 1)[0]
 
-    # pull fields
+    # Pull fields
     r0 = df["r0"].to_numpy(float); r1 = df["r1"].to_numpy(float); r2 = df["r2"].to_numpy(float)
     th_deg = df["theta12_deg"].to_numpy(float)
     mhat = df["m_angleonly"].to_numpy(float) if "m_angleonly" in df.columns else df["m_node"].to_numpy(float)
     mmin = float(df.get("cfg_m_min", pd.Series([0.2])).iloc[0]); mmax = float(df.get("cfg_m_max", pd.Series([4.0])).iloc[0])
-
-    # per-branch SVD-based angle SD (deg) with conservative fallback
-    def _sd_from_svd(x):
-        if not np.isfinite(x) or x <= 0: return 12.0
-        return float(min(15.0, 60.0 / x))
-    sd_e1 = np.array([_sd_from_svd(v) for v in df.get("svd_ratio_e1", pd.Series(np.nan, index=df.index)).to_numpy(float)])
-    sd_e2 = np.array([_sd_from_svd(v) for v in df.get("svd_ratio_e2", pd.Series(np.nan, index=df.index)).to_numpy(float)])
-    # combine into theta SD (sum of two small rotations in quadrature)
-    sd_theta = np.sqrt(sd_e1**2 + sd_e2**2) / np.sqrt(2.0)
-
     N = len(df)
-    m_lo = np.empty(N, float); m_hi = np.empty(N, float)
-    off_edge_after = np.zeros(N, dtype=bool)
 
+    # Detect per-node measured SDs; else fall back to legacy heuristic
+    have_pernode = {"sd_theta_deg","sd_r0","sd_r1","sd_r2"}.issubset(df.columns)
 
-    # progress heartbeat
-    log(f"[UNCERTAINTY] start: N={N}, draws/node={int(n_draws)}, radius_sd_frac={radius_sd_frac}")
-    t0_unc = time.time()
-    next_tick = 0
-    tick_every = max(1, N // 20)  # ~5% steps
+    # Helper: analytic SE(m) via delta method (implicit form of F=0)
+    def _delta_se_m(m, r0_, r1_, r2_, theta_rad, s_lnr0, s_lnr1, s_lnr2, s_theta):
+        # Guard logs
+        r0_ = max(r0_, 1e-12); r1_ = max(r1_, 1e-12); r2_ = max(r2_, 1e-12)
+        a0 = r0_**(2.0*m); a1 = r1_**(2.0*m); a2 = r2_**(2.0*m)
+        b  = (r1_**m) * (r2_**m); c = math.cos(theta_rad); s = math.sin(theta_rad)
+        dFm  = 2.0*np.log(r0_)*a0 - 2.0*np.log(r1_)*a1 - 2.0*np.log(r2_)*a2 - 2.0*c*(np.log(r1_)+np.log(r2_))*b
+        dFx0 = 2.0*m*a0
+        dFx1 = -2.0*m*a1 - 2.0*c*m*b
+        dFx2 = -2.0*m*a2 - 2.0*c*m*b
+        dFth =  2.0*s*b
+        eps = 1e-12
+        d = dFm if abs(dFm) > eps else (np.sign(dFm)*eps + eps)
+        gx0 = -dFx0 / d; gx1 = -dFx1 / d; gx2 = -dFx2 / d; gth = -dFth / d
+        var = (gx0*s_lnr0)**2 + (gx1*s_lnr1)**2 + (gx2*s_lnr2)**2 + (gth*s_theta)**2
+        return float(np.sqrt(max(var, 0.0)))
 
-    for i in range(N):
-        if not np.isfinite(mhat[i]):
-            m_lo[i] = np.nan; m_hi[i] = np.nan
-            continue
+    # Positive-control calibrator for τ so [m̂±1.96·τ·SE] attains ~95% coverage
+    def _calibrate_tau(target_coverage=0.95, n=1200, seed_=17,
+                       dir_sd_deg=3.0, rad_sd_frac=0.05):
+        rr = np.random.default_rng(int(seed_))
+        m_true = rr.uniform(0.35, 3.6, size=n)
+        r1t = rr.uniform(1.0, 4.0, size=n); r2t = rr.uniform(1.0, 4.0, size=n)
+        theta = rr.uniform(np.deg2rad(15.0), np.deg2rad(160.0), size=n)
+        # Build consistent parent from daughters + m_true
+        ephi = rr.uniform(0.0, 2*np.pi, size=n); sgn = np.where(rr.random(n)<0.5, 1.0, -1.0)
+        e1 = np.stack([np.cos(ephi), np.sin(ephi)], axis=1)
+        e2 = np.stack([np.cos(ephi+sgn*theta), np.sin(ephi+sgn*theta)], axis=1)
+        a1 = (np.power(r1t, m_true))[:,None]*e1; a2 = (np.power(r2t, m_true))[:,None]*e2
+        s  = a1 + a2; r0m = np.linalg.norm(s, axis=1) + 1e-12; r0t = np.power(r0m, 1.0/m_true)
+        # Observation noise
+        def _rot(E, sd_deg):
+            d = np.deg2rad(rr.normal(0.0, sd_deg, size=E.shape[0])); cd, sd = np.cos(d), np.sin(d)
+            x, y = E[:,0], E[:,1]; xr, yr = x*cd - y*sd, x*sd + y*cd
+            V = np.stack([xr, yr], axis=1); nrm = np.linalg.norm(V, axis=1, keepdims=True)+1e-12
+            return V/nrm
+        e0 = -s / r0m[:,None]
+        e0n = _rot(e0, dir_sd_deg); e1n = _rot(e1, dir_sd_deg); e2n = _rot(e2, dir_sd_deg)
+        r0n = r0t*(1.0+rr.normal(0.0, rad_sd_frac, size=n))
+        r1n = r1t*(1.0+rr.normal(0.0, rad_sd_frac, size=n))
+        r2n = r2t*(1.0+rr.normal(0.0, rad_sd_frac, size=n))
+        thetan = np.arccos(np.clip(np.sum(e1n*e2n, axis=1), -1.0, 1.0))
+        m_hat = np.array([m_from_node(r0n[i], r1n[i], r2n[i], thetan[i],
+                                      m_min=0.2, m_max=4.0, tol=1e-6, iters=64) for i in range(n)])
+        ok = np.isfinite(m_hat)
+        if not np.any(ok):
+            return 1.0
+        s_lnr = rad_sd_frac*np.ones(ok.sum())
+        s_theta = np.deg2rad(dir_sd_deg)*np.ones(ok.sum())
+        se = np.array([_delta_se_m(m_hat[i], r0n[i], r1n[i], r2n[i], thetan[i],
+                                   s_lnr[i], s_lnr[i], s_lnr[i], s_theta[i]) for i in np.where(ok)[0]])
+        m_hat = m_hat[ok]; m_true2 = m_true[ok]
+        lo, hi = 0.5, 2.0
+        for _ in range(18):
+            mid = 0.5*(lo+hi)
+            cover = np.mean((m_true2 >= m_hat - 1.96*mid*se) & (m_true2 <= m_hat + 1.96*mid*se))
+            if cover < target_coverage: lo = mid
+            else: hi = mid
+        return 0.5*(lo+hi)
 
-        r0i, r1i, r2i = r0[i], r1[i], r2[i]
-        theta_i = np.deg2rad(th_deg[i])
-        draws = []
-        for _ in range(int(n_draws)):
-            rr0 = r0i * (1.0 + rng.normal(0.0, radius_sd_frac))
-            rr1 = r1i * (1.0 + rng.normal(0.0, radius_sd_frac))
-            rr2 = r2i * (1.0 + rng.normal(0.0, radius_sd_frac))
-            tpert = theta_i + np.deg2rad(rng.normal(0.0, sd_theta[i] if np.isfinite(sd_theta[i]) else 10.0))
-            m_s = m_from_node(rr0, rr1, rr2, tpert, m_min=mmin, m_max=mmax, tol=1e-6, iters=64)
-            if np.isfinite(m_s):
-                draws.append(m_s)
+    if have_pernode:
+        # Build per-node noise on (log r) and angle (radians)
+        s_lnr0 = (df["sd_r0"].to_numpy(float) / (r0 + 1e-12))
+        s_lnr1 = (df["sd_r1"].to_numpy(float) / (r1 + 1e-12))
+        s_lnr2 = (df["sd_r2"].to_numpy(float) / (r2 + 1e-12))
+        s_theta = np.deg2rad(df["sd_theta_deg"].to_numpy(float))
 
-        if len(draws) >= 8:
-            qs = np.percentile(draws, [2.5, 97.5])
-            m_lo[i], m_hi[i] = float(qs[0]), float(qs[1])
-            off_edge_after[i] = (m_lo[i] > mmin + 1e-6) and (m_hi[i] < mmax - 1e-6)
-        else:
-            m_lo[i], m_hi[i] = np.nan, np.nan
-            off_edge_after[i] = False
+        # Analytic SE(m)
+        theta_rad = np.deg2rad(th_deg)
+        se = np.empty(N, float)
+        for i in range(N):
+            if not np.isfinite(mhat[i]): se[i] = np.nan; continue
+            se[i] = _delta_se_m(mhat[i], r0[i], r1[i], r2[i], theta_rad[i],
+                                s_lnr0[i], s_lnr1[i], s_lnr2[i], s_theta[i])
 
-        # heartbeat log every ~5%
-        if i >= next_tick:
-            elapsed = time.time() - t0_unc
-            frac = (i + 1) / float(N)
-            eta = elapsed * (1.0 - frac) / max(frac, 1e-9)
-            log(f"[UNCERTAINTY] progress {i+1}/{N} ({frac*100:.0f}%) elapsed={human_time(elapsed)} eta={human_time(eta)}")
-            next_tick += tick_every
+        # One-knob coverage calibration τ (write to CSV header)
+        # Use robust defaults if SD columns are noisy; safe guard if se contains NaNs
+        tau = _calibrate_tau(target_coverage=0.95, n=1200, seed_=seed,
+                             dir_sd_deg=float(np.nanmedian(df["sd_theta_deg"])) if np.isfinite(df["sd_theta_deg"]).any() else 3.0,
+                             rad_sd_frac=float(np.nanmedian(df[["sd_r0","sd_r1","sd_r2"]].to_numpy(float) /
+                                                           (np.stack([r0,r1,r2],axis=1)+1e-12))) if have_pernode else radius_sd_frac)
 
-    log(f"[UNCERTAINTY] done: total={human_time(time.time()-t0_unc)}")
+        z = 1.96
+        m_lo = np.clip(mhat - z*tau*se, mmin, mmax)
+        m_hi = np.clip(mhat + z*tau*se, mmin, mmax)
 
+        off_edge_after = (m_lo > mmin + 1e-6) & (m_hi < mmax - 1e-6)
+
+    else:
+        # === Fallback: legacy Monte-Carlo jitter ===
+        def _sd_from_svd(x):
+            if not np.isfinite(x) or x <= 0: return 12.0
+            return float(min(15.0, 60.0 / x))
+        sd_e1 = np.array([_sd_from_svd(v) for v in df.get("svd_ratio_e1", pd.Series(np.nan, index=df.index)).to_numpy(float)])
+        sd_e2 = np.array([_sd_from_svd(v) for v in df.get("svd_ratio_e2", pd.Series(np.nan, index=df.index)).to_numpy(float)])
+        sd_theta = np.sqrt(sd_e1**2 + sd_e2**2) / np.sqrt(2.0)
+
+        m_lo = np.empty(N, float); m_hi = np.empty(N, float)
+        off_edge_after = np.zeros(N, dtype=bool)
+
+        log(f"[UNCERTAINTY] fallback MC: N={N}, draws/node={int(n_draws)}, radius_sd_frac={radius_sd_frac}")
+        for i in range(N):
+            if not np.isfinite(mhat[i]):
+                m_lo[i] = np.nan; m_hi[i] = np.nan; continue
+            r0i, r1i, r2i = r0[i], r1[i], r2[i]
+            theta_i = np.deg2rad(th_deg[i])
+            draws = []
+            for _ in range(int(n_draws)):
+                rr0 = r0i * (1.0 + rng.normal(0.0, radius_sd_frac))
+                rr1 = r1i * (1.0 + rng.normal(0.0, radius_sd_frac))
+                rr2 = r2i * (1.0 + rng.normal(0.0, radius_sd_frac))
+                tpert = theta_i + np.deg2rad(rng.normal(0.0, sd_theta[i] if np.isfinite(sd_theta[i]) else 10.0))
+                m_s = m_from_node(rr0, rr1, rr2, tpert, m_min=mmin, m_max=mmax, tol=1e-6, iters=64)
+                if np.isfinite(m_s): draws.append(m_s)
+            if len(draws) >= 8:
+                qs = np.percentile(draws, [2.5, 97.5]); m_lo[i], m_hi[i] = float(qs[0]), float(qs[1])
+                off_edge_after[i] = (m_lo[i] > mmin + 1e-6) and (m_hi[i] < mmax - 1e-6)
+            else:
+                m_lo[i], m_hi[i] = np.nan, np.nan; off_edge_after[i] = False
+
+    # Outcome & write CSV/plot (shared)
     ci_width = (m_hi - m_lo)
     at_edge_before = ((np.abs(mhat - mmin) <= 1e-6) | (np.abs(mhat - mmax) <= 1e-6))
     moved_off_edge = np.logical_and(at_edge_before, off_edge_after)
     frac_edge_moved = float(np.mean(moved_off_edge)) if np.any(at_edge_before) else float("nan")
     med_half = float(np.nanmedian(ci_width/2.0))
 
-    # PASS/FAIL
     pass_edge = (np.isfinite(frac_edge_moved) and (frac_edge_moved >= 0.60))
     pass_width = (np.isfinite(med_half) and (med_half <= 0.35))
     outcome = "PASS" if (pass_edge and pass_width) else "FAIL"
 
-    # write CSV
     out_csv = CSV_ROOT / dataset / "UNCERTAINTY__nodes.csv"
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     df_out = pd.DataFrame({
@@ -2060,18 +2612,21 @@ def compute_per_node_uncertainty(
         "at_edge_before": at_edge_before,
         "at_edge_after": off_edge_after
     })
-    header = (f"# STEP 3 — Per-node uncertainty: outcome={outcome} | "
-              f"frac_edge_moved={frac_edge_moved:.3f} | median CI half-width={med_half:.3f}\n")
+    header = "# STEP 3 — Per-node uncertainty"
+    if have_pernode:
+        header += f" (analytic delta; τ-calibrated)"
+    else:
+        header += f" (fallback MC; radius_sd_frac={radius_sd_frac:.3f})"
+    header += f": outcome={outcome} | frac_edge_moved={frac_edge_moved:.3f} | median CI half-width={med_half:.3f}\n"
     out_csv.write_text(header + df_out.to_csv(index=False))
 
-    # forest plot
+    # Forest (publication style)
     order = np.argsort(np.nan_to_num(ci_width, nan=9e9))
     top_idx = order[:min(300, len(order))]
-    fig = plt.figure(figsize=(8.5, 10.0)); ax = plt.gca()
+    fig = plt.figure(figsize=(8.6, 10.0)); ax = plt.gca()
     y = np.arange(top_idx.size)
     ax.hlines(y, m_lo[top_idx], m_hi[top_idx], linewidth=1.2)
     ax.plot(mhat[top_idx], y, "o", markersize=3)
-    # mark edge nodes
     for j, i in enumerate(top_idx):
         if at_edge_before[i]:
             ax.plot([m_lo[i], m_hi[i]], [j, j], linewidth=2.4)
@@ -2324,6 +2879,7 @@ def plot_theta_vs_m_scatter(
     bins_deg: float = 10.0,
     bootstrap: int = 5000,
     seed: int = 13,
+    panel_filter: str = "all",
 ):
     """
     Panel C — Behavioral signature (test) with adaptive sampling and uncertainty bars:
@@ -2528,7 +3084,8 @@ def run_ablation_grid(df: pd.DataFrame, dataset: str,
                       p_thresh: float = 0.01,
                       qc_drift_limit_pp: float = 10.0,
                       n_perm: int = 2000,
-                      seed: int = 13):
+                      seed: int = 13,
+                      norm_mode: str = "baseline"):
     """
     STEP 4 — Ablations & robustness (formal test)
       PASS if:
@@ -2552,14 +3109,16 @@ def run_ablation_grid(df: pd.DataFrame, dataset: str,
     rng = np.random.default_rng(int(seed))
     dataset_base = dataset.split("__", 1)[0]
 
-    # helper
     def _closure_residual_batch(r0, r1, r2, e0, e1, e2, m):
         a0 = (np.power(r0, m))[:, None] * e0
         a1 = (np.power(r1, m))[:, None] * e1
         a2 = (np.power(r2, m))[:, None] * e2
         num = np.linalg.norm(a0 + a1 + a2, axis=1)
         den = (np.power(r1, m)) + (np.power(r2, m)) + 1e-12
+        if norm_mode == "sum":
+            den = (np.power(r0, m)) + den
         return num / den
+
 
     # arrays
     e0 = df[["e0x","e0y"]].to_numpy(float)
@@ -2700,7 +3259,8 @@ def run_ablation_grid(df: pd.DataFrame, dataset: str,
 
 def plot_tariff_map(gray: np.ndarray, skel: np.ndarray,
                     nodes: List[NodeRecord],
-                    dataset: str, image_id: str):
+                    dataset: str, image_id: str,
+                    norm_mode: str = "baseline"):
     """
     Tariff overlay (RGB encodes c0:c1:c2), with QC outline and bracket-edge markers.
     Also emits a residual-vector performance map alongside the tariff map.
@@ -2768,7 +3328,10 @@ def plot_tariff_map(gray: np.ndarray, skel: np.ndarray,
         # normalized residual vector u = num/den, R = ||u||
         num = (rec.r0 ** rec.m_node) * e0 + (rec.r1 ** rec.m_node) * e1 + (rec.r2 ** rec.m_node) * e2
         den = (rec.r1 ** rec.m_node) + (rec.r2 ** rec.m_node) + 1e-12
+        if norm_mode == "sum":
+            den = (rec.r0 ** rec.m_node) + den
         u = num / den
+
         R = float(np.linalg.norm(u))
         if not np.isfinite(R) or R <= 0:
             continue
@@ -2815,7 +3378,16 @@ def summarize_and_write(df: pd.DataFrame, dataset: str, diags: List[Dict],
     m_med  = float(np.median(df["m_node"].values)) if n_kept > 0 else float("nan")
     m_iqr  = (float(np.percentile(df["m_node"], 25)), float(np.percentile(df["m_node"], 75))) if n_kept > 0 else (float("nan"), float("nan"))
     m_mean = float(np.mean(df["m_node"].values)) if n_kept > 0 else float("nan")
-    R_med  = float(np.median(df["R_m"].values))    if ("R_m" in df.columns and n_kept > 0) else float("nan")
+    # Image-clustered median & CI (prefer held-out if present)
+    Rcol_for_cluster = "R_m_holdout" if ("R_m_holdout" in df.columns) else ("R_m" if "R_m" in df.columns else None)
+    if (Rcol_for_cluster is not None) and (n_kept > 0):
+        ic = image_cluster_stats(df, value_col=Rcol_for_cluster, B=5000, seed=13)
+        ic_line = (f"R(m) image-median : {ic['median']:.3f}   "
+                   f"95% CI [{ic['ci'][0]:.3f},{ic['ci'][1]:.3f}]   "
+                   f"N_img={ic['n_img']}   "
+                   f"share_img[R<0.55]={ic['share_img_Rlt055']:.2%}   R<0.85={ic['share_img_Rlt085']:.2%}")
+    else:
+        ic_line = "R(m) image-median : n/a"
 
     # bracket-edge m count
     try:
@@ -2982,7 +3554,8 @@ def summarize_and_write(df: pd.DataFrame, dataset: str, diags: List[Dict],
         "[QC & METRICS]",
         f"QC loose/strict    : {N_qc_loose}/{n_kept} ({frac_loose:.1%})  |  {N_qc_strict}/{n_kept} ({frac_strict:.1%})" if n_kept>0 else "QC loose/strict    : n/a",
         f"m median (IQR)     : {m_med:.3f}  ({m_iqr[0]:.3f},{m_iqr[1]:.3f})   mean={m_mean:.3f}",
-        f"R(m) median        : {R_med:.3f}" if np.isfinite(R_med) else "R(m) median        : n/a",
+        (f"R(m) median        : {R_med:.3f}" if np.isfinite(R_med) else "R(m) median        : n/a"),
+        ic_line,
         f"m at bracket edge  : {n_edge}  ({frac_edge:.1%}) at ±{edge_eps:.2f}",
         f"angle_min per image: median={angle_gate_med:.1f}°  range=({angle_gate_rng[0]:.1f}°, {angle_gate_rng[1]:.1f}°)",
         f"parent ambiguity   : {parent_ambig_frac:.1%}" if np.isfinite(parent_ambig_frac) else "parent ambiguity   : n/a",
@@ -3021,6 +3594,88 @@ def _bootstrap_ci_median_simple(x, B=5000, seed=13):
     meds = np.median(rng.choice(x, size=(int(B), x.size), replace=True), axis=1)
     lo, hi = np.percentile(meds, [2.5, 97.5])
     return float(lo), float(hi)
+
+
+
+# === IMAGE-CLUSTERED STATS & EFFECT SIZE LABELS ==============================
+def image_cluster_stats(df: pd.DataFrame, value_col: str = "R_m_holdout",
+                        B: int = 10000, seed: int = 13) -> Dict:
+    """
+    Image-cluster bootstrap: compute the dataset-level median of image medians,
+    with 95% CI from resampling images (not nodes).
+    Returns dict with median, (lo,hi), n_img, share_img_Rlt055, share_img_Rlt085.
+    """
+    g = df.dropna(subset=[value_col]).groupby("image_id")[value_col].median()
+    arr = g.to_numpy(dtype=float)
+    out = {"median": float("nan"), "ci": (float("nan"), float("nan")),
+           "n_img": int(g.size), "share_img_Rlt055": float("nan"), "share_img_Rlt085": float("nan")}
+    if arr.size == 0:
+        return out
+    obs = float(np.median(arr))
+    rng = np.random.default_rng(int(seed))
+    idx = np.arange(arr.size)
+    boots = np.empty(int(B), dtype=float)
+    for b in range(int(B)):
+        pick = rng.choice(idx, size=idx.size, replace=True)
+        boots[b] = float(np.median(arr[pick]))
+    lo, hi = np.percentile(boots, [2.5, 97.5])
+    out["median"] = obs
+    out["ci"] = (float(lo), float(hi))
+    out["share_img_Rlt055"] = float(np.mean(arr < 0.55))
+    out["share_img_Rlt085"] = float(np.mean(arr < 0.85))
+    return out
+
+def cliffs_delta_label(delta: float) -> str:
+    """
+    Conventional bins (approx Vargha–Delaney): 0.11 small, 0.28 medium, 0.43 large.
+    We report direction (negative is better).
+    """
+    if not np.isfinite(delta): return "n/a"
+    x = abs(delta)
+    if x >= 0.43: return "large"
+    if x >= 0.28: return "medium"
+    if x >= 0.11: return "small"
+    return "negligible"
+
+def _parse_nulltest_shuffle(dataset_tag: str, reports_dir: Path) -> Dict:
+    """
+    Pull shuffle-null summary from reports/<variant>/NULLTEST__R_m.txt
+    (written by plot_residual_distribution). Returns dict with
+    med_obs, med_null, d_med, p_med, p_frac, delta.
+    """
+    p = Path(reports_dir) / dataset_tag / "NULLTEST__R_m.txt"
+    out = {"med_obs": None, "med_null": None, "d_med": None,
+           "p_med": None, "p_frac": None, "delta": None}
+    if not p.exists():
+        return out
+    txt = p.read_text().splitlines()
+    # med_obs line
+    for L in txt:
+        if L.strip().startswith("Observed: median="):
+            try:
+                out["med_obs"] = float(L.split("median=")[1].split()[0])
+            except Exception:
+                pass
+        if L.strip().lower().startswith("shuffle:"):
+            # Expected pattern we write below:
+            # shuffle: med_null=..., Δmedian(obs-null)=..., p_median(lower)=..., p_frac<0.55(higher)=..., Cliff's δ=...
+            try:
+                parts = L.split(":")[1].split(",")
+                kv = {}
+                for part in parts:
+                    if "=" in part:
+                        k,v = part.strip().split("=",1); kv[k.strip()] = v.strip()
+                out["med_null"] = float(kv.get("med_null")) if "med_null" in kv else None
+                out["d_med"]    = float(kv.get("Δmedian(obs-null)")) if "Δmedian(obs-null)" in kv else None
+                out["p_med"]    = float(kv.get("p_median(lower)")) if "p_median(lower)" in kv else None
+                out["p_frac"]   = float(kv.get("p_frac<0.55(higher)")) if "p_frac<0.55(higher)" in kv else None
+                out["delta"]    = float(kv.get("Cliff's δ")) if "Cliff's δ" in kv else None
+            except Exception:
+                pass
+            break
+    return out
+
+
 
 def _parse_prereg_c1_from_file(dataset_tag, base_reports_dir):
     """
@@ -3145,7 +3800,6 @@ def plot_segrobust_scoreboard(
       figures/ALL_DATASETS__segrobust_scoreboard.png
     """
     if seg_variants is None:
-        # The four prereg segmentation strata used by --seg-robust
         seg_variants = ["frangi+otsu", "frangi+quantile", "sato+otsu", "sato+quantile"]
 
     datasets = list(datasets)
@@ -3162,7 +3816,6 @@ def plot_segrobust_scoreboard(
         sharey=True,
     )
 
-    # Normalize axes array shapes for 1-row/1-col cases
     if n_rows == 1:
         axes = np.array([axes])
     if n_cols == 1:
@@ -3171,7 +3824,6 @@ def plot_segrobust_scoreboard(
     for i, ds in enumerate(datasets):
         tsv_path = reports_dir / ds / "SEGROBUST__summary.tsv"
         if not tsv_path.exists():
-            # No summary for this dataset: blank row
             for j in range(n_cols):
                 axes[i, j].axis("off")
             continue
@@ -3191,82 +3843,41 @@ def plot_segrobust_scoreboard(
             ci_hi = float(row["R_med_CI_hi"])
             N_nodes = int(row["N_nodes"])
 
-            # Pull prereg stats (worst-case p-values and Cliff's δ) for this dataset+variant
-            p_med = None
-            p_frac = None
-            delta = None
+            # Traffic-light color based only on presence of prereg success markers if available
             prereg_dir = reports_dir / f"{ds}__{variant}"
             prereg_path = prereg_dir / "PREREG__C1.txt"
+            face = "#f8cccc"
             if prereg_path.exists():
                 txt = prereg_path.read_text()
-
-                def _grab(pattern: str):
-                    m = re.search(pattern, txt)
-                    return float(m.group(1)) if m else None
-
-                # Uses the "Worst-case across nulls: p_med=..., p_frac=..., max δ=..." line
-                p_med  = _grab(r"p_med=([0-9eE\.\-+]+)")
-                p_frac = _grab(r"p_frac=([0-9eE\.\-+]+)")
-                delta  = _grab(r"max δ=([0-9eE\.\-+]+)")
-
-            # Traffic-light coloring
-            if (
-                (p_med is not None)
-                and (p_frac is not None)
-                and (delta is not None)
-                and (p_med <= 1e-3)
-                and (p_frac <= 1e-3)
-                and (delta <= -0.20)
-            ):
-                face = "#d1f2d1"   # green: prereg thresholds all met
-            elif (p_med is not None) or (p_frac is not None) or (delta is not None):
-                face = "#ffe7b3"   # amber: partial / mixed evidence
-            else:
-                face = "#f8cccc"   # red: missing prereg or failed tests
+                import re
+                try:
+                    p_med  = float(re.search(r"p_med=([0-9eE\.\-+]+)", txt).group(1))
+                    p_frac = float(re.search(r"p_frac=([0-9eE\.\-+]+)", txt).group(1))
+                    delta  = float(re.search(r"max δ=([0-9eE\.\-+]+)", txt).group(1))
+                    if (p_med <= 1e-3) and (p_frac <= 1e-3) and (delta <= -0.20):
+                        face = "#d1f2d1"
+                    else:
+                        face = "#ffe7b3"
+                except Exception:
+                    face = "#ffe7b3"
             ax.set_facecolor(face)
 
-            # Median + 95% CI whisker at x=0.5
             ax.plot([0.5, 0.5], [ci_lo, ci_hi], color="black", linewidth=1.5)
             ax.plot([0.5], [r_med], "o", color="black", markersize=4)
-
-            # Quality bands (strict / loose)
             ax.axhline(0.55, linestyle="--", linewidth=0.8)
             ax.axhline(0.85, linestyle="--", linewidth=0.8)
-
-            ax.set_xlim(0.0, 1.0)
-            ax.set_ylim(0.0, 1.5)
-            ax.set_xticks([])
-            ax.set_yticks([0.0, 0.55, 0.85, 1.2])
+            ax.set_xlim(0.0, 1.0); ax.set_ylim(0.0, 1.5)
+            ax.set_xticks([]); ax.set_yticks([0.0, 0.55, 0.85, 1.2])
             ax.grid(axis="y", alpha=0.15, linestyle="-", linewidth=0.7)
 
-            # Text badge
-            lines = [
-                f"N={N_nodes}",
-                f"median={r_med:.3f}",
-                f"95%[{ci_lo:.3f},{ci_hi:.3f}]",
-            ]
-            if p_med is not None:
-                lines.append(f"p̃={p_med:.1e}")
-            if p_frac is not None:
-                lines.append(f"p<0.55={p_frac:.1e}")
-            if delta is not None:
-                lines.append(f"δ={delta:.2f}")
-
-            ax.text(
-                0.02,
-                0.98,
-                "\n".join(lines),
-                transform=ax.transAxes,
-                va="top",
-                ha="left",
-                fontsize=7,
-                bbox=dict(facecolor="white", alpha=0.9, edgecolor="none"),
-            )
+            lines = [f"N={N_nodes}", f"median={r_med:.3f}", f"95%[{ci_lo:.3f},{ci_hi:.3f}]"]
+            ax.text(0.02, 0.98, "\n".join(lines), transform=ax.transAxes,
+                    va="top", ha="left", fontsize=7,
+                    bbox=dict(facecolor="white", alpha=0.9, edgecolor="none"))
 
             if i == 0:
                 ax.set_title(variant.replace("+", " + "), fontsize=9)
 
-        # Row label with dataset name
         axes[i, 0].set_ylabel(ds, rotation=0, labelpad=35, fontsize=10, va="center")
 
     fig.suptitle(title, fontsize=12)
@@ -3276,6 +3887,233 @@ def plot_segrobust_scoreboard(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(str(out_path), dpi=300)
     plt.close(fig)
+
+
+
+def plot_showstopper_residuals(
+    dataset_tags: List[str],
+    R_col: str = "R_m_holdout",
+    labels: Optional[List[str]] = None,
+    out_name: Optional[str] = None,
+    boot: int = 5000,
+):
+    """
+    PRE-style overlay of residual densities for 2+ dataset variants.
+
+    Reads node CSVs under reports/<variant>/nodes__<variant>.csv, uses the chosen
+    R_col (R_m_holdout or R_m), annotates node- and image-level medians with 95% CIs,
+    and writes a single comparison figure under figures/SHOWSTOPPER/.
+    """
+    if labels is None:
+        labels = dataset_tags
+
+    series = []
+    infos = []
+
+    for tag, lab in zip(dataset_tags, labels):
+        csv_path = CSV_ROOT / tag / f"nodes__{tag}.csv"
+        if not csv_path.exists():
+            continue
+        df = pd.read_csv(csv_path)
+        col = R_col if R_col in df.columns else ("R_m" if "R_m" in df.columns else None)
+        if col is None:
+            continue
+        x = df[col].astype(float).to_numpy()
+        x = x[np.isfinite(x)]
+        if x.size == 0:
+            continue
+        lo, hi = _bootstrap_ci_median_simple(x, B=boot, seed=17)
+        med = float(np.median(x))
+        ic = image_cluster_stats(df, value_col=col, B=boot, seed=17)
+        series.append((lab, x))
+        infos.append({
+            "label": lab,
+            "N_nodes": x.size,
+            "node_med": med,
+            "node_lo": lo,
+            "node_hi": hi,
+            "img_med": ic["median"],
+            "img_lo": ic["ci"][0],
+            "img_hi": ic["ci"][1],
+            "img_share055": ic["share_img_Rlt055"],
+        })
+
+    if len(series) < 2:
+        return
+
+    fig = plt.figure(figsize=(8.2, 5.2))
+    ax = plt.gca()
+
+    all_vals = np.concatenate([s[1] for s in series])
+    nb = min(80, max(30, int(np.ceil(np.sqrt(all_vals.size)))))
+    xmax = float(np.nanpercentile(all_vals, 99.5))
+    bins = np.linspace(0.0, min(2.0, xmax), nb)
+
+    for lab, x in series:
+        ax.hist(x, bins=bins, density=True, alpha=0.45, label=f"{lab} (N={x.size})")
+
+    ax.axvspan(0.0, 0.55, alpha=0.10)
+    ax.axvspan(0.55, 0.85, alpha=0.07)
+    ax.axvline(0.55, linestyle="--", linewidth=1.0)
+    ax.axvline(0.85, linestyle="--", linewidth=1.0)
+
+    for info in infos:
+        ax.axvline(info["node_med"], linewidth=1.8)
+
+    lines = []
+    for info in infos:
+        lines.append(
+            f"{info['label']}: "
+            f"node med={info['node_med']:.3f} 95%[{info['node_lo']:.3f},{info['node_hi']:.3f}]   "
+            f"img med={info['img_med']:.3f} 95%[{info['img_lo']:.3f},{info['img_hi']:.3f}]   "
+            f"Pr_img[R<0.55]={info['img_share055']:.2%}"
+        )
+    ax.text(
+        0.02, 0.98, "\n".join(lines),
+        transform=ax.transAxes, va="top", ha="left", fontsize=9,
+        bbox=dict(facecolor="white", alpha=0.90, edgecolor="none", boxstyle="round,pad=0.25")
+    )
+
+    ax.set_xlabel("Closure residual R(m)")
+    ax.set_ylabel("Density")
+    ax.set_title("Residuals — show-stopper comparison")
+    ax.grid(axis="y", alpha=0.25, linestyle="-", linewidth=0.8)
+    ax.legend(loc="upper right", frameon=True, framealpha=0.95, facecolor="white", edgecolor="none")
+
+    out_dir = FIG_ROOT / "SHOWSTOPPER"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if out_name is None:
+        base = "__vs__".join([t.split("__", 1)[0] for t in dataset_tags[:2]])
+        out_name = f"{base}__showstopper_residuals.png"
+    fig.savefig(str(out_dir / out_name), dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+
+
+
+# === NEW: cross-dataset suite summary (baseline/lo/hi) with stat & syst uncertainties ===
+def _write_suite_summary(datasets, reports_dir: Path, out_dir: Path, suite_names=("base", "lo", "hi")):
+    """
+    Build a single TSV/MD for all requested datasets summarizing:
+      - held-out R(m) median with 95% bootstrap CI (statistical),
+      - systematic uncertainty as a quadrature combination of:
+          • suite half-range across (base, lo, hi) for the chosen variant_core,
+          • segmentation half-range across all variants sharing that core.
+    Assumes SEGROBUST__summary.tsv exists per dataset and contains rows with
+    variant names like 'frangi+otsu__base', 'frangi+otsu__lo', 'frangi+otsu__hi'
+    (our main loop writes those via _make_variant_row).
+    """
+    rows = []
+    for ds in datasets:
+        tsv = reports_dir / ds / "SEGROBUST__summary.tsv"
+        if not tsv.exists():
+            continue
+        df = pd.read_csv(tsv, sep="\t")
+
+        # Use the segmentation variant with the most nodes in baseline
+        base_rows = df[df["variant"].str.endswith("__base") | (~df["variant"].str.contains("__"))]
+        if base_rows.empty:
+            continue
+
+        best_variant = base_rows.sort_values("N_nodes", ascending=False).iloc[0]["variant"]
+        base_core = best_variant.split("__")[0] if "__" in best_variant else best_variant
+
+        # Collect across suite for this core
+        suite_stats: Dict[str, Tuple[float, float, float, int]] = {}
+        for s in suite_names:
+            if s != "base":
+                look = f"{base_core}__{s}"
+            else:
+                # allow either "base_core" or "base_core__base" as "base"
+                look = base_core if (df["variant"] == base_core).any() else f"{base_core}__base"
+            row = df[df["variant"] == look]
+            if row.empty:
+                continue
+            rmed = float(row.iloc[0]["R_med"])
+            lo = float(row.iloc[0]["R_med_CI_lo"])
+            hi = float(row.iloc[0]["R_med_CI_hi"])
+            n_nodes = int(row.iloc[0]["N_nodes"])
+            suite_stats[s] = (rmed, lo, hi, n_nodes)
+
+        if len(suite_stats) == 0:
+            continue
+
+        # Suite half-range (base/lo/hi) in R_med
+        meds = [suite_stats[s][0] for s in suite_stats]
+        suite_half = 0.5 * (max(meds) - min(meds)) if len(meds) >= 2 else float("nan")
+
+        # Take base tuple (fall back to "first" if base missing)
+        base_tuple = suite_stats.get("base", next(iter(suite_stats.values())))
+
+        # Build systematic contributions
+        systs: List[float] = []
+        if len(meds) >= 2:
+            systs.append(suite_half)
+
+        # Segmentation half-range across all variants that share this core
+        try:
+            core_prefix = base_core.split("__")[0]
+            seg_block = df[df["variant"].str.startswith(core_prefix)]
+            if not seg_block.empty:
+                v = seg_block["R_med"].astype(float).to_numpy()
+                if v.size >= 2:
+                    seg_half = 0.5 * (float(np.nanmax(v)) - float(np.nanmin(v)))
+                    systs.append(seg_half)
+        except Exception:
+            pass
+
+        # Combined systematic: quadrature of available components
+        systematic_combined = math.sqrt(sum(x * x for x in systs)) if systs else float("nan")
+
+        rows.append({
+            "dataset": ds,
+            "variant_core": base_core,
+            "R_med_base": base_tuple[0],
+            "R_med_CI_lo": base_tuple[1],
+            "R_med_CI_hi": base_tuple[2],
+            "N_nodes_base": base_tuple[3],
+            # store the combined systematic in the same column name you already use
+            "systematic_half_range": systematic_combined,
+        })
+
+    if not rows:
+        return
+
+    df_out = pd.DataFrame(
+        rows,
+        columns=[
+            "dataset",
+            "variant_core",
+            "R_med_base",
+            "R_med_CI_lo",
+            "R_med_CI_hi",
+            "N_nodes_base",
+            "systematic_half_range",
+        ],
+    )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tsv_out = out_dir / "ALL__SUITE_summary.tsv"
+    md_out = out_dir / "ALL__SUITE_summary.md"
+    df_out.to_csv(tsv_out, sep="\t", index=False)
+
+    md_lines = [
+        "| dataset | variant_core | R_med (base) | 95% CI lo | 95% CI hi | N (base) | systematic (± combined) |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for _, r in df_out.iterrows():
+        md_lines.append(
+            f"| {r['dataset']} | {r['variant_core']} | {r['R_med_base']:.3f} | "
+            f"{r['R_med_CI_lo']:.3f} | {r['R_med_CI_hi']:.3f} | {int(r['N_nodes_base'])} | "
+            f"±{r['systematic_half_range']:.3f} |"
+        )
+    md_out.write_text("\n".join(md_lines) + "\n")
+
+    log("====== CROSS-SUITE SUMMARY ======")
+    log(df_out.to_string(index=False))
+    log(f"Saved: {tsv_out}")
+    log(f"Saved: {md_out}")
+    log("=================================")
 
 
 
@@ -3365,6 +4203,81 @@ def _parse_ablation(base_reports_dir: Path, dataset_tag: str) -> Dict:
     if m_v: out["verdict"] = m_v.group(1)
     if m_p: out["worst_p"] = float(m_p.group(1))
     return out
+
+
+
+def append_to_final_table(df: pd.DataFrame, dataset_tag: str, reports_dir: Path = CSV_ROOT):
+    """
+    Append one row to reports/<DATASET_BASE>/FINAL__table.tsv for this variant (dataset_tag).
+    Pulls node/image counts, node & image medians with CIs, nulltest deltas/p-values,
+    Panel C share, and parent-direction p-values.
+    """
+    base = dataset_tag.split("__", 1)[0]
+    out_dir = reports_dir / base
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "FINAL__table.tsv"
+
+    Rcol = "R_m_holdout" if "R_m_holdout" in df.columns else ("R_m" if "R_m" in df.columns else None)
+    if Rcol is None or len(df) == 0:
+        return
+
+    N_images = int(df["image_id"].nunique())
+    N_nodes = int(len(df))
+    strict_frac = float(df["qc_pass_strict"].mean()) if "qc_pass_strict" in df.columns and len(df) > 0 else float("nan")
+
+    node_vals = df[Rcol].astype(float).to_numpy()
+    node_vals = node_vals[np.isfinite(node_vals)]
+    if node_vals.size:
+        lo_node, hi_node = _bootstrap_ci_median_simple(node_vals, B=5000, seed=17)
+        med_node = float(np.median(node_vals))
+    else:
+        lo_node, hi_node, med_node = float("nan"), float("nan"), float("nan")
+
+    ic = image_cluster_stats(df, value_col=Rcol, B=5000, seed=17)
+
+    nt = _parse_nulltest_shuffle(dataset_tag, reports_dir)
+    d_med = nt["d_med"]
+    p_med = nt["p_med"]
+    p_frac = nt["p_frac"]
+    delta = nt["delta"]
+
+    pan = _parse_panelC(reports_dir, dataset_tag)
+    pnt = _parse_parentdir_variant(reports_dir, dataset_tag)
+
+    row = {
+        "dataset": base,
+        "variant": dataset_tag.split("__", 1)[1] if "__" in dataset_tag else dataset_tag,
+        "N_images": N_images,
+        "N_nodes": N_nodes,
+        "strict_QC_frac": strict_frac,
+        "median_R_node": med_node,
+        "95CI_node_lo": lo_node,
+        "95CI_node_hi": hi_node,
+        "median_R_img": ic["median"],
+        "95CI_img_lo": ic["ci"][0],
+        "95CI_img_hi": ic["ci"][1],
+        "delta_median_vs_shuffle": d_med,
+        "p_median": p_med,
+        "p_frac055": p_frac,
+        "Cliffs_delta": delta,
+        "Cliffs_size": cliffs_delta_label(delta) if delta is not None else "",
+        "PanelC_share_le_0.25": pan["share"] if pan["found"] else float("nan"),
+        "phi_p_m2": pnt["p_m2"] if pnt["found"] else float("nan"),
+        "phi_p_m1": pnt["p_m1"] if pnt["found"] else float("nan"),
+    }
+
+    import csv
+    write_header = not out_path.exists()
+    with open(out_path, "a", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(row.keys()), delimiter="\t")
+        if write_header:
+            w.writeheader()
+        w.writerow(row)
+
+
+
+
+
 
 def _parse_parentdir_variant(reports_dir: Path, dataset_tag: str) -> Dict:
     p = reports_dir / dataset_tag / "PARENTDIR__phi.txt"
@@ -3686,6 +4599,37 @@ def main():
     parser.add_argument("--svd-ratio-min", type=float, default=3.0, help="Minimum PCA singular value ratio (S0/S1) to accept a tangent")
     parser.add_argument("--dedup-radius", type=int, default=3, help="Pixel radius for de-duplicating degree-3 junction pixels")
 
+    # Geometry micro-choices and normalization
+    parser.add_argument(
+        "--tangent-mode", type=str, default="pca",
+        choices=["pca", "chord"],
+        help="Tangent estimation: 'pca' (default) or 'chord' (force chord-only)."
+    )
+    parser.add_argument(
+        "--parent-tie-break", type=str, default="conservative",
+        choices=["conservative", "optimistic"],
+        help="When parent/daughter assignment alternatives disagree: "
+             "conservative=pick worse R; optimistic=pick better R."
+    )
+    parser.add_argument(
+        "--radius-estimator", type=str, default="A",
+        choices=["A", "B"],
+        help="Radius micro-knob: A=(5,10,15)/halfwin=2 (default); B=(8,12,16)/halfwin=3."
+    )
+    parser.add_argument(
+        "--R-norm", dest="R_norm", type=str, default="baseline",
+        choices=["baseline", "sum"],
+        help="Residual normalization: baseline=(r1^m+r2^m), sum=(r0^m+r1^m+r2^m)."
+    )
+    parser.add_argument(
+        "--workers", type=int, default=max(1, (os.cpu_count() or 2) // 2),
+        help="Number of parallel worker processes for image analysis (default: ~half cores)."
+    )
+    parser.add_argument(
+        "--intraop-threads", type=int, default=1,
+        help="Threads per worker for BLAS/OpenMP (MKL/OpenBLAS). 1 avoids oversubscription."
+    )
+
     # m inversion
     parser.add_argument("--m-min", type=float, default=0.2, help="Lower bracket for m")
     parser.add_argument("--m-max", type=float, default=4.0, help="Upper bracket for m")
@@ -3732,6 +4676,16 @@ def main():
     parser.add_argument("--posctrl-parent-mislabel", type=float, default=0.0,
                         help="Fraction [0,1] of synthetic nodes with wrong parent (positive-control realism)")
 
+    # === NEW: small experiment suite (baseline + 'lo' + 'hi') ===
+    parser.add_argument("--suite-triplet", action="store_true",
+                        help="Run baseline and two matched variants ('lo','hi') for ALL datasets (e.g., HRF, STARE).")
+    parser.add_argument("--suite-angle-delta", type=float, default=3.0,
+                        help="± delta (deg) to apply to --min-angle for 'lo'/'hi' suite variants.")
+    parser.add_argument("--suite-tangent-delta", type=int, default=4,
+                        help="± delta (pixels) to apply to --tangent-len for 'lo'/'hi' suite variants.")
+    parser.add_argument("--suite-svd-delta", type=float, default=0.5,
+                        help="± delta to apply to --svd-ratio-min for 'lo'/'hi' suite variants.")
+
     # ===== VALIDATION SUITE (hard PASS/FAIL) =====
     parser.add_argument("--validate", action="store_true",
                         help="Run prereg-style validation suite and emit a single SUPPORT/MIXED/NOSUPPORT verdict per dataset")
@@ -3754,8 +4708,21 @@ def main():
                         help="Scoreboard scope: aggregate to dataset-level (recommended) or per-variant")
     parser.add_argument("--verdict-name", type=str, default="default",
                         help="Optional tag baked into VERDICT__*.{txt,json}")
+                        
+                        
+    parser.add_argument("--panel-filter", type=str, default="all",
+        choices=["all","strict"],
+        help="Panels B/C node set: 'all' (recommended) or 'strict' (strict-QC nodes only).")
 
     args = parser.parse_args()
+    
+    # Cap BLAS/OpenMP in the coordinator too (workers set their own in _init_worker)
+    if threadpool_limits is not None:
+        try:
+            threadpool_limits(limits=int(args.intraop_threads))
+        except Exception:
+            pass
+
 
     # Freeze knobs if a profile is requested (mitigate researcher d.o.f.)
     if args.profile == "prereg-2025Q4":
@@ -3788,8 +4755,14 @@ def main():
         angle_auto_pctl=args.angle_auto_pctl,
         min_angle_floor_deg=args.min_angle_floor,
         angle_soft_margin_deg=args.angle_soft_margin,
-        strict_qc=args.strict_qc
+        strict_qc=args.strict_qc,
+        px_size_um=args.px_size_um,
+        tangent_mode=args.tangent_mode,
+        parent_tie_break=args.parent_tie_break,
+        radius_estimator=args.radius_estimator,
+        r_norm=args.R_norm,
     )
+
 
 
     data_root = Path(args.data_root)
@@ -3894,258 +4867,341 @@ def main():
             variant_pairs = [("frangi", "otsu"), ("frangi", "quantile"),
                              ("sato", "otsu"),   ("sato", "quantile")]
 
+        # Suite names and deltas
+        if args.suite_triplet:
+            suite_defs = [
+                ("base", 0.0, 0, 0.0),
+                ("lo",  -abs(args.suite_angle_delta), -abs(args.suite_tangent_delta), -abs(args.suite_svd_delta)),
+                ("hi",   abs(args.suite_angle_delta),  abs(args.suite_tangent_delta),  abs(args.suite_svd_delta)),
+            ]
+        else:
+            suite_defs = [("base", 0.0, 0, 0.0)]
+
         # Collect per-variant rows for the final cross-variant table
         segrobust_rows = []
 
         for seg_method, thresh_method in variant_pairs:
-            log(f"---- SEG VARIANT: {seg_method}+{thresh_method} ----")
-            dataset_tag = f"{dataset}__{seg_method}+{thresh_method}"
+            for suite_name, d_ang, d_tan, d_svd in suite_defs:
+                log(f"---- SEG VARIANT: {seg_method}+{thresh_method}  | suite={suite_name} ----")
+                tag_suffix = (f"__{suite_name}" if suite_name != "base" else "")
+                dataset_tag = f"{dataset}__{seg_method}+{thresh_method}{tag_suffix}"
 
-            seg_cfg = SegConfig(vesselness_method=seg_method, thresh_method=thresh_method)
-            qc_cfg = QCConfig(
-                min_angle_deg=args.min_angle,
-                max_angle_deg=args.max_angle,
-                min_branch_len_px=args.min_branch_len,
-                max_walk_len_px=48,
-                min_radius_px=args.min_radius,
-                m_bracket=(args.m_min, args.m_max),
-                symmetric_ratio_tol=1.08,
-                dedup_radius_px=args.dedup_radius,
-                tangent_len_px=args.tangent_len,
-                svd_ratio_min=args.svd_ratio_min,
-                angle_auto=args.angle_auto,
-                angle_auto_pctl=args.angle_auto_pctl,
-                min_angle_floor_deg=args.min_angle_floor,
-                angle_soft_margin_deg=args.angle_soft_margin,
-                strict_qc=args.strict_qc,
-                px_size_um=args.px_size_um,
-            )
+                # Apply deltas to the geometry gates in a *copy* of args
+                min_angle_eff = max(5.0, args.min_angle + d_ang)
+                tangent_len_eff = max(8, args.tangent_len + d_tan)
+                svd_min_eff = max(1.2, args.svd_ratio_min + d_svd)
+
+                seg_cfg = SegConfig(vesselness_method=seg_method, thresh_method=thresh_method)
+                qc_cfg = QCConfig(
+                    min_angle_deg=min_angle_eff,
+                    max_angle_deg=args.max_angle,
+                    min_branch_len_px=args.min_branch_len,
+                    max_walk_len_px=48,
+                    min_radius_px=args.min_radius,
+                    m_bracket=(args.m_min, args.m_max),
+                    symmetric_ratio_tol=1.08,
+                    dedup_radius_px=args.dedup_radius,
+                    tangent_len_px=tangent_len_eff,
+                    svd_ratio_min=svd_min_eff,
+                    angle_auto=args.angle_auto,
+                    angle_auto_pctl=args.angle_auto_pctl,
+                    min_angle_floor_deg=args.min_angle_floor,
+                    angle_soft_margin_deg=args.angle_soft_margin,
+                    strict_qc=args.strict_qc,
+                    px_size_um=args.px_size_um,
+                    tangent_mode=args.tangent_mode,
+                    parent_tie_break=args.parent_tie_break,
+                    radius_estimator=args.radius_estimator,
+                    r_norm=args.R_norm,
+                )
 
 
-            all_records: List[NodeRecord] = []
-            diags_all: List[Dict] = []
+                all_records: List[NodeRecord] = []
+                diags_all: List[Dict] = []
 
-            @dataclass
-            class DatasetStats:
-                total: int
-                done: int = 0
-                nodes_raw: int = 0
-                nodes_dedup: int = 0
-                nodes_kept: int = 0
-                skips: dict = field(default_factory=lambda: {
-                    "short_branch": 0, "bad_tangent": 0, "small_radius": 0,
-                    "angle_out_of_range": 0, "no_m_candidate": 0, "qc_fail": 0
-                })
+                @dataclass
+                class DatasetStats:
+                    total: int
+                    done: int = 0
+                    nodes_raw: int = 0
+                    nodes_dedup: int = 0
+                    nodes_kept: int = 0
+                    skips: dict = field(default_factory=lambda: {
+                        "short_branch": 0, "bad_tangent": 0, "small_radius": 0,
+                        "angle_out_of_range": 0, "no_m_candidate": 0, "qc_fail": 0
+                    })
 
-            stats = DatasetStats(total=len(img_paths))
-            t0_dataset = time.time()
+                stats = DatasetStats(total=len(img_paths))
+                t0_dataset = time.time()
 
-            with tqdm(total=stats.total, desc=f"{dataset}:{seg_method}+{thresh_method}", unit="img") as bar:
-                for img_path in img_paths:
+                desc = f"{dataset}:{seg_method}+{thresh_method}{tag_suffix}"
+                # --- safe, cross‑platform mp context ---
+                start_methods = mp.get_all_start_methods()
+                if sys.platform.startswith("linux") and "fork" in start_methods:
+                    ctx = mp.get_context("fork")   # fastest on Linux when available
+                else:
+                    ctx = mp.get_context("spawn")  # macOS & Windows
+
+
+                tasks = [
+                    (str(p), dataset_tag, seg_cfg, qc_cfg, args.save_debug)
+                    for p in img_paths
+                ]
+
+                if int(args.workers) <= 1:
+                    # Fallback: original sequential behavior (kept for reproducibility/debug)
+                    with tqdm(total=len(tasks), desc=desc, unit="img") as bar:
+                        for t in tasks:
+                            img_path_str, recs, diag, err = _process_one_image(t)
+                            diags_all.append(diag)
+                            all_records.extend(recs)
+
+                            stats.done += 1
+                            stats.nodes_raw   += int(diag.get("n_nodes_total_raw", 0))
+                            stats.nodes_dedup += int(diag.get("n_nodes_total_dedup", 0))
+                            stats.nodes_kept  += int(diag.get("n_nodes_kept", 0))
+                            for k, v in diag.get("skip_reasons", {}).items():
+                                stats.skips[k] = stats.skips.get(k, 0) + int(v)
+
+                            bar.set_postfix({
+                                "done": f"{stats.done}/{stats.total}",
+                                "kept": stats.nodes_kept,
+                                "deg3": stats.nodes_dedup,
+                                "left": stats.total - stats.done,
+                            })
+                            bar.update(1)
+                else:
+                    # Cap to available CPUs to avoid oversubscription on small hosts
+                    max_workers = min(int(args.workers), max(1, os.cpu_count() or 1))
+                    log(f"[RUN] parallel mode: workers={max_workers} | intraop_threads/worker={int(args.intraop_threads)}")
+
+                    # Optional: recycle workers to mitigate slow memory growth (when supported)
+                    _executor_kwargs = {}
                     try:
-                        recs, diag = analyze_image(
-                            img_path=img_path,
-                            dataset=dataset_tag,   # variant-scoped overlays & node metadata
-                            seg_cfg=seg_cfg,
-                            qc=qc_cfg,
-                            save_debug=args.save_debug,
-                            out_dir=ROOT
-                        )
-                        diags_all.append(diag)
-                        all_records.extend(recs)
+                        import inspect
+                        if "max_tasks_per_child" in inspect.signature(ProcessPoolExecutor).parameters:
+                            _executor_kwargs["max_tasks_per_child"] = 64
+                    except Exception:
+                        pass
 
-                        stats.done += 1
-                        stats.nodes_raw   += int(diag.get("n_nodes_total_raw", 0))
-                        stats.nodes_dedup += int(diag.get("n_nodes_total_dedup", 0))
-                        stats.nodes_kept  += int(diag.get("n_nodes_kept", 0))
-                        for k, v in diag.get("skip_reasons", {}).items():
-                            stats.skips[k] = stats.skips.get(k, 0) + int(v)
+                    try:
+                        with ProcessPoolExecutor(
+                            max_workers=max_workers,
+                            mp_context=ctx,
+                            initializer=_init_worker,          # caps BLAS/OpenMP inside each worker
+                            initargs=(int(args.intraop_threads),),
+                            **_executor_kwargs
+                        ) as ex, tqdm(total=len(tasks), desc=desc, unit="img") as bar:
 
-                        bar.set_postfix({
-                            "done": f"{stats.done}/{stats.total}",
-                            "kept": stats.nodes_kept,
-                            "deg3": stats.nodes_dedup,
-                            "left": stats.total - stats.done,
-                        })
-                        bar.update(1)
+                            futures = [ex.submit(_process_one_image, t) for t in tasks]
 
-                        if args.save_debug and len(recs) > 0:
-                            gray = imread_gray(img_path)
-                            mask_path = find_mask_for_image(img_path)
-                            if mask_path is not None:
-                                mask = io.imread(str(mask_path))
-                                if mask.ndim == 3:
-                                    mask = color.rgb2gray(mask)
-                                mask = (mask > 0.5).astype(np.uint8)
-                            else:
-                                mask = segment_vessels(gray, seg_cfg)
-                            skel, _ = skeleton_and_dist(mask)
-                            plot_tariff_map(gray, skel, recs, dataset_tag, img_path.stem)
+                            for fut in as_completed(futures):
+                                try:
+                                    img_path_str, recs, diag, err = fut.result()
+                                except Exception as e:
+                                    # Handle executor/serialization crashes cleanly
+                                    err = f"executor_failure: {e}"
+                                    img_path_str = "<unknown>"
+                                    recs, diag = [], {
+                                        "dataset": dataset, "image_id": Path(img_path_str).stem,
+                                        "n_nodes_total_raw": 0, "n_nodes_total_dedup": 0, "n_nodes_kept": 0,
+                                        "skip_reasons": {"worker_error": 1}, "error": str(e)
+                                    }
 
-                    except Exception as e:
-                        log(f"[ERROR] Image {img_path.name}: {e}")
-                        stats.done += 1
-                        bar.set_postfix({
-                            "done": f"{stats.done}/{stats.total}",
-                            "kept": stats.nodes_kept,
-                            "deg3": stats.nodes_dedup,
-                            "left": stats.total - stats.done,
-                        })
-                        bar.update(1)
+                                if err:
+                                    log(f"[ERROR] Image {Path(img_path_str).name}: {err}")
 
-            dt = human_time(time.time() - t0_dataset)
-            log(
-                "---- DATASET PROGRESS ----\n"
-                f"dataset={dataset} | variant={seg_method}+{thresh_method} | images {stats.done}/{stats.total} | "
-                f"nodes raw→deg3→kept {stats.nodes_raw}→{stats.nodes_dedup}→{stats.nodes_kept} | "
-                f"skips: " + ", ".join(f"{k}={v}" for k, v in sorted(stats.skips.items(), key=lambda kv: -kv[1])) + " | "
-                f"elapsed {dt}\n"
-                "--------------------------"
-            )
+                                diags_all.append(diag)
+                                all_records.extend(recs)
 
-            if len(all_records) == 0:
-                log(f"[WARN] No nodes kept for {dataset_tag}; skipping plots/summary.")
-                continue
+                                # Same stats bookkeeping you already had
+                                stats.done += 1
+                                stats.nodes_raw   += int(diag.get("n_nodes_total_raw", 0))
+                                stats.nodes_dedup += int(diag.get("n_nodes_total_dedup", 0))
+                                stats.nodes_kept  += int(diag.get("n_nodes_kept", 0))
+                                for k, v in (diag.get("skip_reasons", {}) or {}).items():
+                                    stats.skips[k] = stats.skips.get(k, 0) + int(v)
 
-            # Save CSV
-            csv_path = CSV_ROOT / dataset_tag / f"nodes__{dataset_tag}.csv"
-            csv_path.parent.mkdir(parents=True, exist_ok=True)
-            df = pd.DataFrame([r.__dict__ for r in all_records])
+                                bar.set_postfix({
+                                    "done": f"{stats.done}/{stats.total}",
+                                    "kept": stats.nodes_kept,
+                                    "deg3": stats.nodes_dedup,
+                                    "left": stats.total - stats.done,
+                                })
+                                bar.update(1)
 
-            # Freeze configs into CSV
-            cfg_snapshot = {
-                "min_angle_deg": qc_cfg.min_angle_deg,
-                "max_angle_deg": qc_cfg.max_angle_deg,
-                "min_branch_len_px": qc_cfg.min_branch_len_px,
-                "tangent_len_px": qc_cfg.tangent_len_px,
-                "svd_ratio_min": qc_cfg.svd_ratio_min,
-                "dedup_radius_px": qc_cfg.dedup_radius_px,
-                "strict_qc": qc_cfg.strict_qc,
-                "m_min": qc_cfg.m_bracket[0],
-                "m_max": qc_cfg.m_bracket[1],
-                "symmetric_ratio_tol": qc_cfg.symmetric_ratio_tol,
-                "angle_auto": qc_cfg.angle_auto,
-                "angle_auto_pctl": qc_cfg.angle_auto_pctl,
-                "min_angle_floor_deg": qc_cfg.min_angle_floor_deg,
-                "px_size_um": qc_cfg.px_size_um,
-            }
-            for k, v in cfg_snapshot.items():
-                df[f"cfg_{k}"] = v
-            df["args_profile"] = args.profile
-            df["args_seg_method"] = seg_cfg.vesselness_method
-            df["args_thresh_method"] = seg_cfg.thresh_method
-            df["args_radius_jitter_frac"] = args.radius_jitter_frac
+                    except KeyboardInterrupt:
+                        log("[RUN] KeyboardInterrupt — cancelling outstanding work")
+                        try:
+                            ex.shutdown(wait=False, cancel_futures=True)  # type: ignore[name-defined]
+                        except Exception:
+                            pass
+                        raise
 
-            df.to_csv(csv_path, index=False)
-            log(f"Wrote node-level CSV: {csv_path}")
 
-            # Plots & prereg selection (transparent, stage-by-stage)
-            variant_fig_dir = FIG_ROOT / dataset_tag
-            variant_rep_dir = CSV_ROOT / dataset_tag
-            dataset_base    = dataset_tag.split("__", 1)[0]
-            base_fig_dir    = FIG_ROOT / dataset_base
-            base_rep_dir    = CSV_ROOT / dataset_base
-
-            log(f"[POST] Starting post-processing for {dataset_tag}")
-            log(f"[POST] Panel A — m distribution → {variant_fig_dir}/dataset_{dataset_tag}__m_hist.png")
-            try:
-                plot_m_distribution(df, dataset_tag)
-            except Exception as e:
-                log(f"[POST][WARN] Panel A failed: {e}")
-
-            m_col = "m_node" if args.primary_metric == "asconfigured" else "m_angleonly"
-            R_col = "R_m"    if args.primary_metric == "asconfigured" else "R_m_holdout"
-            metric_name = "heldout" if R_col == "R_m_holdout" else "asconfigured"
-            log(
-                f"[POST] Panel B/C1 — residual histogram (metric={metric_name}) "
-                f"→ {variant_fig_dir}/dataset_{dataset_tag}__residual_hist.png; "
-                f"nulls report → {variant_rep_dir}/NULLTEST__R_m.txt; prereg (if heldout) → {variant_rep_dir}/PREREG__C1.txt"
-            )
-            try:
-                plot_residual_distribution(
-                    df,
-                    dataset_tag,
-                    n_perm=args.null_perm,
-                    boot=args.boot,
-                    include_nulls=("shuffle", "swap", "randtheta", "rshuffle"),
-                    jitter_frac=args.radius_jitter_frac,
-                    m_col=m_col,
-                    R_col=R_col,
-                    gaussian_jitter_sd=args.radius_jitter_sd,
-                    reinvert_m_on_jitter=args.reinvert_m_on_jitter
+                dt = human_time(time.time() - t0_dataset)
+                log(
+                    "---- DATASET PROGRESS ----\n"
+                    f"dataset={dataset} | variant={seg_method}+{thresh_method}{tag_suffix} | images {stats.done}/{stats.total} | "
+                    f"nodes raw→deg3→kept {stats.nodes_raw}→{stats.nodes_dedup}→{stats.nodes_kept} | "
+                    f"skips: " + ", ".join(f"{k}={v}" for k, v in sorted(stats.skips.items(), key=lambda kv: -kv[1])) + " | "
+                    f"elapsed {dt}\n"
+                    "--------------------------"
                 )
-            except Exception as e:
-                log(f"[POST][WARN] Panel B/C1 failed: {e}")
 
-            log(
-                f"[POST] Baselines — histograms and paired ΔR ECDF "
-                f"→ {variant_fig_dir}/dataset_{dataset_tag}__residual_baselines.png, "
-                f"{variant_fig_dir}/dataset_{dataset_tag}__paired_deltaR_ecdf.png; "
-                f"text → {variant_rep_dir}/BASELINES__R_m.txt"
-            )
-            try:
-                plot_fixed_m_baselines(df, dataset_tag)
-            except Exception as e:
-                log(f"[POST][WARN] Baselines failed: {e}")
+                if len(all_records) == 0:
+                    log(f"[WARN] No nodes kept for {dataset_tag}; skipping plots/summary.")
+                    continue
 
-            log(f"[POST] Parent-direction error (φ₀) → {variant_fig_dir}/dataset_{dataset_tag}__parent_dir_error_ecdf.png")
-            try:
-                plot_parent_direction_error(df, dataset_tag)   # STEP 5
-            except Exception as e:
-                log(f"[POST][WARN] Parent-direction failed: {e}")
+                # Save CSV
+                csv_path = CSV_ROOT / dataset_tag / f"nodes__{dataset_tag}.csv"
+                csv_path.parent.mkdir(parents=True, exist_ok=True)
+                df_nodes = pd.DataFrame([r.__dict__ for r in all_records])
 
-            log(f"[POST] Panel C — θ vs m scatter → {variant_fig_dir}/dataset_{dataset_tag}__theta_vs_m_scatter.png; test → {base_rep_dir}/PANELC__theta_vs_m_test.txt")
-            try:
-                plot_theta_vs_m_scatter(df, dataset_tag, symmetric_tol=1.08)
-            except Exception as e:
-                log(f"[POST][WARN] Panel C failed: {e}")
+                # Freeze configs into CSV
+                cfg_snapshot = {
+                    "min_angle_deg": qc_cfg.min_angle_deg,
+                    "max_angle_deg": qc_cfg.max_angle_deg,
+                    "min_branch_len_px": qc_cfg.min_branch_len_px,
+                    "tangent_len_px": qc_cfg.tangent_len_px,
+                    "svd_ratio_min": qc_cfg.svd_ratio_min,
+                    "dedup_radius_px": qc_cfg.dedup_radius_px,
+                    "strict_qc": qc_cfg.strict_qc,
+                    "m_min": qc_cfg.m_bracket[0],
+                    "m_max": qc_cfg.m_bracket[1],
+                    "symmetric_ratio_tol": qc_cfg.symmetric_ratio_tol,
+                    "angle_auto": qc_cfg.angle_auto,
+                    "angle_auto_pctl": qc_cfg.angle_auto_pctl,
+                    "min_angle_floor_deg": qc_cfg.min_angle_floor_deg,
+                    "px_size_um": qc_cfg.px_size_um,
+                    "tangent_mode": qc_cfg.tangent_mode,
+                    "parent_tie_break": qc_cfg.parent_tie_break,
+                    "radius_estimator": qc_cfg.radius_estimator,
+                    "r_norm": qc_cfg.r_norm,
+                }
 
-            log(f"[POST] STEP 3 — per-node uncertainty (if enabled) → {variant_rep_dir}/UNCERTAINTY__nodes.csv")
-            try:
-                compute_per_node_uncertainty(df, dataset_tag)    # STEP 3
-            except Exception as e:
-                log(f"[POST][WARN] Uncertainty step failed: {e}")
+                for k, v in cfg_snapshot.items():
+                    df_nodes[f"cfg_{k}"] = v
+                df_nodes["args_profile"] = args.profile
+                df_nodes["args_seg_method"] = seg_cfg.vesselness_method
+                df_nodes["args_thresh_method"] = seg_cfg.thresh_method
+                df_nodes["args_radius_jitter_frac"] = args.radius_jitter_frac
+                df_nodes.to_csv(csv_path, index=False)
+                log(f"Wrote node-level CSV: {csv_path}")
 
-            log(f"[POST] STEP 4 — ablation grid → {variant_fig_dir}/dataset_{dataset_tag}__ablation_medianR_grid.png; test → {variant_rep_dir}/ABLATION__test.txt")
-            try:
-                run_ablation_grid(df, dataset_tag)               # STEP 4 (test)
-            except Exception as e:
-                log(f"[POST][WARN] Ablation step failed: {e}")
+                # Post-processing panels (unchanged calls)
+                variant_fig_dir = FIG_ROOT / dataset_tag
+                variant_rep_dir = CSV_ROOT / dataset_tag
+                dataset_base    = dataset_tag.split("__", 1)[0]
+                base_fig_dir    = FIG_ROOT / dataset_base
+                base_rep_dir    = CSV_ROOT / dataset_base
 
-            log(f"[POST] Positive control → {variant_fig_dir}/POSCTRL__recovery.png; text → {variant_rep_dir}/POSCTRL__recovery.txt")
-            try:
-                plot_positive_control_recovery(
-                    dataset_tag,
-                    n_samples=args.posctrl_n,
-                    noise_dir_deg=args.posctrl_dir_noise_deg,
-                    noise_radius_frac=args.posctrl_radius_noise,
-                    parent_mislabel_frac=args.posctrl_parent_mislabel,
+                log(f"[POST] Panel A — m distribution → {variant_fig_dir}/dataset_{dataset_tag}__m_hist.png")
+                try:
+                    plot_m_distribution(df_nodes, dataset_tag)
+                except Exception as e:
+                    log(f"[POST][WARN] Panel A failed: {e}")
+
+                m_col = "m_node" if args.primary_metric == "asconfigured" else "m_angleonly"
+                R_col = "R_m"    if args.primary_metric == "asconfigured" else "R_m_holdout"
+                metric_name = "heldout" if R_col == "R_m_holdout" else "asconfigured"
+                log(f"[POST] Panel B/C1 — residual histogram (metric={metric_name}) → {variant_fig_dir}/dataset_{dataset_tag}__residual_hist.png")
+                try:
+                    plot_residual_distribution(
+                        df_nodes,
+                        dataset_tag,
+                        n_perm=args.null_perm,
+                        boot=args.boot,
+                        include_nulls=("shuffle", "swap", "randtheta", "rshuffle"),
+                        jitter_frac=args.radius_jitter_frac,
+                        m_col=m_col,
+                        R_col=R_col,
+                        gaussian_jitter_sd=args.radius_jitter_sd,
+                        reinvert_m_on_jitter=args.reinvert_m_on_jitter,
+                        norm_mode=qc_cfg.r_norm,
+                    )
+                    # Append a clean, tabulated FINAL summary row (per variant)
+                    try:
+                        append_to_final_table(df_nodes, dataset_tag, reports_dir=CSV_ROOT)
+                    except Exception as e_final:
+                        log(f"[FINAL][WARN] append_to_final_table failed: {e_final}")
+                except Exception as e:
+                    log(f"[POST][WARN] Panel B/C1 failed: {e}")
+
+
+                log(f"[POST] Baselines → {variant_fig_dir}/dataset_{dataset_tag}__residual_baselines.png")
+                try:
+                    plot_fixed_m_baselines(
+                        df_nodes,
+                        dataset_tag,
+                        norm_mode=qc_cfg.r_norm,
+                    )
+                except Exception as e:
+                    log(f"[POST][WARN] Baselines failed: {e}")
+
+
+                log(f"[POST] Parent-direction error → {variant_fig_dir}/dataset_{dataset_tag}__parent_dir_error_ecdf.png")
+                try:
+                    plot_parent_direction_error(df_nodes, dataset_tag)
+                except Exception as e:
+                    log(f"[POST][WARN] Parent-direction failed: {e}")
+
+                log(f"[POST] Panel C — θ vs m scatter → {variant_fig_dir}/dataset_{dataset_tag}__theta_vs_m_scatter.png")
+                try:
+                    plot_theta_vs_m_scatter(df_nodes, dataset_tag, symmetric_tol=1.08)
+                except Exception as e:
+                    log(f"[POST][WARN] Panel C failed: {e}")
+
+                log(f"[POST] STEP 3 — per-node uncertainty → {variant_rep_dir}/UNCERTAINTY__nodes.csv")
+                try:
+                    compute_per_node_uncertainty(df_nodes, dataset_tag)
+                except Exception as e:
+                    log(f"[POST][WARN] Uncertainty step failed: {e}")
+
+                log(f"[POST] STEP 4 — ablation grid → {variant_fig_dir}/dataset_{dataset_tag}__ablation_medianR_grid.png")
+                try:
+                    run_ablation_grid(
+                        df_nodes,
+                        dataset_tag,
+                        norm_mode=qc_cfg.r_norm,
+                    )
+                except Exception as e:
+                    log(f"[POST][WARN] Ablation step failed: {e}")
+
+                log(f"[POST] Positive control → {variant_fig_dir}/POSCTRL__recovery.png")
+                try:
+                    plot_positive_control_recovery(
+                        dataset_tag,
+                        n_samples=args.posctrl_n,
+                        noise_dir_deg=args.posctrl_dir_noise_deg,
+                        noise_radius_frac=args.posctrl_radius_noise,
+                        parent_mislabel_frac=args.posctrl_parent_mislabel,
+                    )
+                except Exception as e:
+                    log(f"[POST][WARN] Positive control failed: {e}")
+
+                log(f"[POST] SUMMARY → {variant_rep_dir}/SUMMARY__{dataset_tag}.txt")
+                try:
+                    summarize_and_write(
+                        df=df_nodes,
+                        dataset=dataset_tag,
+                        diags=diags_all,
+                        n_images_total=len(img_paths),
+                        elapsed_sec=time.time() - t0_dataset
+                    )
+                except Exception as e:
+                    log(f"[POST][WARN] Summary failed: {e}")
+
+                # Cross-variant summary row (keeps held-out as primary if requested)
+                segrobust_rows.append(
+                    _make_variant_row(
+                        df=df_nodes,
+                        dataset_tag=dataset_tag,
+                        reports_dir=CSV_ROOT,
+                        primary_metric="heldout" if args.primary_metric == "heldout" else "asconfigured"
+                    )
                 )
-            except Exception as e:
-                log(f"[POST][WARN] Positive control failed: {e}")
-
-            log(f"[POST] SUMMARY → {variant_rep_dir}/SUMMARY__{dataset_tag}.txt")
-            try:
-                summarize_and_write(
-                    df=df,
-                    dataset=dataset_tag,
-                    diags=diags_all,
-                    n_images_total=len(img_paths),
-                    elapsed_sec=time.time() - t0_dataset
-                )
-            except Exception as e:
-                log(f"[POST][WARN] Summary failed: {e}")
-
-            # Append a one-line row for the cross-variant table (heldout as primary by your command)
-            segrobust_rows.append(
-                _make_variant_row(
-                    df=df,
-                    dataset_tag=dataset_tag,
-                    reports_dir=CSV_ROOT,
-                    primary_metric="heldout" if args.primary_metric == "heldout" else "asconfigured"
-                )
-            )
-            log(f"[POST] Completed post-processing for {dataset_tag}")
+                log(f"[POST] Completed post-processing for {dataset_tag}")
 
         # After all variants: write the cross-variant summary table once
         _write_segrobust_summary(
@@ -4175,7 +5231,6 @@ def main():
                 log(f"[VERDICT][WARN] validation suite failed: {e}")
 
     # After all datasets: build cross-dataset segmentation-robust scoreboard
-    # (only when segmentation strata are enabled and the held-out metric is used)
     try:
         if args.seg_robust and args.primary_metric == "heldout":
             plot_segrobust_scoreboard(
@@ -4186,8 +5241,35 @@ def main():
     except Exception as e:
         log(f"[SCOREBOARD][WARN] cross-dataset scoreboard failed: {e}")
 
+    # NEW: if suite-triplet was used, write a paper-ready cross-suite summary for all datasets
+    try:
+        if args.suite_triplet:
+            _write_suite_summary(
+                datasets=args.datasets,
+                reports_dir=CSV_ROOT,
+                out_dir=CSV_ROOT,
+                suite_names=("base", "lo", "hi")
+            )
+    except Exception as e:
+        log(f"[SUITE][WARN] cross-suite summary failed: {e}")
+
+    # Show-stopper residual comparison across datasets (first two primaries)
+    try:
+        if len(args.datasets) >= 2:
+            primary_tags = []
+            for ds in args.datasets:
+                pick = _pick_primary_variant(ds, CSV_ROOT)
+                if pick:
+                    primary_tags.append(pick)
+            if len(primary_tags) >= 2:
+                Rcol = "R_m_holdout" if args.primary_metric == "heldout" else "R_m"
+                plot_showstopper_residuals(primary_tags[:2], R_col=Rcol)
+    except Exception as e:
+        log(f"[SHOWSTOPPER][WARN] failed to render: {e}")
+
     total_dt = human_time(time.time() - overall_start)
     log(f"ALL DONE in {total_dt}. See figures/, reports/, logs/ under {ROOT}")
+
 
 
 if __name__ == "__main__":

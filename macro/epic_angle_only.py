@@ -5015,71 +5015,191 @@ def _parse_prereg_c1_from_file(dataset_tag: str, reports_dir: Path) -> Dict[str,
 
 def _make_variant_row(df, dataset_tag, reports_dir, primary_metric="heldout"):
     """
-    Build a one-line summary for a variant tag:
-      variant, N_nodes, R_med (heldout if available), 95% CI, p_med, delta, outcome,
-      jitter p/delta/outcome (if present), strict_pass_frac.
+    Build a one-line, PRE-grade summary for a variant tag.
+
+    Backward-compatible fields (kept so downstream plots/tables don't break):
+      - R_med, R_med_CI_lo, R_med_CI_hi  (node-level median & 95% CI)
+      - N_nodes, strict_pass_frac, p_med, delta, Outcome, p_med_jit, delta_jit, Outcome_jit
+
+    Added fields (referee-facing richness):
+      - N_img                               number of images contributing
+      - R_med_node, R_med_node_CI_lo/hi     node-level median & 95% CI (duplicate of R_med*, explicit name)
+      - R_med_img,  R_med_img_CI_lo/hi      image-level median of per-image medians & 95% CI
+      - share_img_Rlt055, share_img_Rlt085  image-level coverage fractions
     """
     import numpy as np
+
     variant = dataset_tag.split("__", 1)[1] if "__" in dataset_tag else dataset_tag
-    # observed metric
+
+    # ---- choose residual column ----
     if primary_metric == "heldout" and "R_m_holdout" in df.columns:
-        Robs = df["R_m_holdout"].astype(float).values
+        value_col = "R_m_holdout"
     else:
-        Robs = df.get("R_m", np.array([], float)).astype(float).values
-    med = float(np.median(Robs)) if Robs.size else float("nan")
-    lo, hi = _bootstrap_ci_median_simple(Robs, B=2000, seed=17)
-    # qc strict pass
-    strict_frac = float(df["qc_pass_strict"].mean()) if "qc_pass_strict" in df.columns and len(df) else float("nan")
-    # prereg file parse
+        value_col = "R_m" if "R_m" in df.columns else None
+
+    # ---- node-level statistics ----
+    if value_col is None or len(df) == 0:
+        Robs = np.array([], dtype=float)
+    else:
+        Robs = df[value_col].astype(float).to_numpy()
+    Robs = Robs[np.isfinite(Robs)]
+
+    if Robs.size:
+        R_med_node = float(np.median(Robs))
+        R_node_lo, R_node_hi = _bootstrap_ci_median_simple(Robs, B=2000, seed=17)
+    else:
+        R_med_node, R_node_lo, R_node_hi = float("nan"), float("nan"), float("nan")
+
+    # Back-compat aliases used by existing consumers (scoreboard etc.)
+    R_med = R_med_node
+    R_med_CI_lo = R_node_lo
+    R_med_CI_hi = R_node_hi
+
+    # ---- image-clustered (image-level) statistics ----
+    if value_col is not None and len(df) > 0:
+        ic = image_cluster_stats(df, value_col=value_col, B=2000, seed=17)
+        R_med_img = float(ic["median"])
+        R_img_lo  = float(ic["ci"][0])
+        R_img_hi  = float(ic["ci"][1])
+        share055  = float(ic["share_img_Rlt055"])
+        share085  = float(ic["share_img_Rlt085"])
+        N_img     = int(ic["n_img"])
+    else:
+        R_med_img = R_img_lo = R_img_hi = float("nan")
+        share055 = share085 = float("nan")
+        N_img = 0
+
+    # ---- strict QC fraction ----
+    strict_frac = (
+        float(df["qc_pass_strict"].mean())
+        if "qc_pass_strict" in df.columns and len(df) > 0
+        else float("nan")
+    )
+
+    # ---- prereg summary (safe .get to avoid KeyError) ----
     c1 = _parse_prereg_c1_from_file(dataset_tag, reports_dir)
+    p_med       = c1.get("p_med")
+    delta       = c1.get("delta")
+    outcome     = c1.get("outcome")
+    p_med_jit   = c1.get("p_med_jit")
+    delta_jit   = c1.get("delta_jit")
+    outcome_jit = c1.get("Outcome_jit", c1.get("outcome_jit"))
+
+    # ---- compose row ----
     row = {
+        # identity & counts
         "variant": variant,
         "N_nodes": int(len(df)),
-        "R_med": med,
-        "R_med_CI_lo": lo,
-        "R_med_CI_hi": hi,
-        # core prereg stats (may be None if not present)
-        "p_med": c1.get("p_med"),
-        "delta": c1.get("delta"),
-        "Outcome": c1.get("outcome"),
-        # optional jitter block — use .get so missing keys become None
-        "p_med_jit": c1.get("p_med_jit"),
-        "delta_jit": c1.get("delta_jit"),
-        # tolerate either 'Outcome_jit' or 'outcome_jit' in the dict
-        "Outcome_jit": c1.get("Outcome_jit", c1.get("outcome_jit")),
+        "N_img": int(N_img),
+
+        # node-level (kept old names + explicit names)
+        "R_med": R_med,
+        "R_med_CI_lo": R_med_CI_lo,
+        "R_med_CI_hi": R_med_CI_hi,
+        "R_med_node": R_med_node,
+        "R_med_node_CI_lo": R_node_lo,
+        "R_med_node_CI_hi": R_node_hi,
+
+        # image-level medians & coverage
+        "R_med_img": R_med_img,
+        "R_med_img_CI_lo": R_img_lo,
+        "R_med_img_CI_hi": R_img_hi,
+        "share_img_Rlt055": share055,
+        "share_img_Rlt085": share085,
+
+        # prereg C1 summary
+        "p_med": p_med,
+        "delta": delta,
+        "Outcome": outcome,
+        "p_med_jit": p_med_jit,
+        "delta_jit": delta_jit,
+        "Outcome_jit": outcome_jit,
+
+        # QC
         "strict_pass_frac": strict_frac,
     }
-
-
     return row
+
 
 
 
 
 def _write_segrobust_summary(dataset, rows, reports_dir, log_fn):
     """
-    Write a tabulated cross-variant summary and echo as a pretty table to logs.
+    Write a cross-variant segmentation-robust summary and echo as a table.
+
     Files:
-      reports/<dataset>/SEGROBUST__summary.tsv
-      reports/<dataset>/SEGROBUST__summary.md
+      reports/<dataset>/SEGROBUST__summary.tsv  – machine-readable (TSV)
+      reports/<dataset>/SEGROBUST__summary.md   – human-readable Markdown
+
+    Columns include:
+      variant, N_nodes, N_img, strict_pass_frac,
+      node-level:   R_med, R_med_CI_lo, R_med_CI_hi (back-compat),
+                    R_med_node, R_med_node_CI_lo, R_med_node_CI_hi,
+      image-level:  R_med_img, R_med_img_CI_lo, R_med_img_CI_hi,
+                    share_img_Rlt055, share_img_Rlt085,
+      prereg C1:    p_med, delta, Outcome, p_med_jit, delta_jit, Outcome_jit.
     """
     import pandas as pd
     from pathlib import Path
-    cols = ["variant","N_nodes","R_med","R_med_CI_lo","R_med_CI_hi",
-            "p_med","delta","Outcome","p_med_jit","delta_jit","Outcome_jit","strict_pass_frac"]
-    df_sum = pd.DataFrame(rows, columns=cols)
+    import numpy as np
+
+    cols = [
+        # identity & counts
+        "variant",
+        "N_nodes",
+        "N_img",
+        "strict_pass_frac",
+
+        # node-level (include back-compat names)
+        "R_med",
+        "R_med_CI_lo",
+        "R_med_CI_hi",
+        "R_med_node",
+        "R_med_node_CI_lo",
+        "R_med_node_CI_hi",
+
+        # image-level
+        "R_med_img",
+        "R_med_img_CI_lo",
+        "R_med_img_CI_hi",
+        "share_img_Rlt055",
+        "share_img_Rlt085",
+
+        # prereg C1
+        "p_med",
+        "delta",
+        "Outcome",
+        "p_med_jit",
+        "delta_jit",
+        "Outcome_jit",
+    ]
+
+    # Allow missing keys in rows; fill with NaN
+    df_sum = pd.DataFrame(rows)
+    for c in cols:
+        if c not in df_sum.columns:
+            df_sum[c] = np.nan
+    df_sum = df_sum[cols]
+
     out_dir = Path(reports_dir) / dataset
     out_dir.mkdir(parents=True, exist_ok=True)
     tsv = out_dir / "SEGROBUST__summary.tsv"
     md  = out_dir / "SEGROBUST__summary.md"
     df_sum.to_csv(tsv, sep="\t", index=False)
-    # Markdown table
-    md_lines = ["| " + " | ".join(cols) + " |",
-                "| " + " | ".join(["---"]*len(cols)) + " |"]
+
+    # Markdown preview (readable in git)
+    md_lines = [
+        "| " + " | ".join(cols) + " |",
+        "| " + " | ".join(["---"] * len(cols)) + " |",
+    ]
     for _, r in df_sum.iterrows():
-        md_lines.append("| " + " | ".join(str(r[c]) if pd.notna(r[c]) else "" for c in cols) + " |")
+        md_lines.append(
+            "| " + " | ".join("" if pd.isna(r[c]) else str(r[c]) for c in cols) + " |"
+        )
     md.write_text("\n".join(md_lines) + "\n")
-    # Log a readable table
+
+    # Console log
     log_fn("====== SEG-ROBUST SUMMARY (per variant) ======")
     log_fn(df_sum.to_string(index=False))
     log_fn(f"Saved: {tsv}")
@@ -5317,128 +5437,242 @@ def plot_showstopper_residuals(
 
 
 
-# === NEW: cross-dataset suite summary (baseline/lo/hi) with stat & syst uncertainties ===
 def _write_suite_summary(datasets, reports_dir: Path, out_dir: Path, suite_names=("base", "lo", "hi")):
     """
-    Build a single TSV/MD for all requested datasets summarizing:
-      - held-out R(m) median with 95% bootstrap CI (statistical),
-      - systematic uncertainty as a quadrature combination of:
-          • suite half-range across (base, lo, hi) for the chosen variant_core,
-          • segmentation half-range across all variants sharing that core.
-    Assumes SEGROBUST__summary.tsv exists per dataset and contains rows with
-    variant names like 'frangi+otsu__base', 'frangi+otsu__lo', 'frangi+otsu__hi'
-    (our main loop writes those via _make_variant_row).
+    PRE-grade, referee-facing suite summary for each dataset:
+      • Consolidated base/lo/hi table with node- and image-level medians + 95% CIs
+      • Coverage (share of images with R<0.55 and R<0.85)
+      • PREREG C1 outcomes (worst p_med, worst p_frac, max δ) per variant
+      • Suite systematics: half-range across base/lo/hi (node & image)
+      • Optional segmentation systematics: half-range across all seg variants sharing the same core
+      • Combined systematic (quadrature)
+    Also writes machine-readable TSV/MD artifacts under reports/.
     """
-    rows = []
+    import pandas as pd, numpy as np, math
+    from pathlib import Path
+
+    def _row_from_segrob(df: pd.DataFrame, variant_name: str) -> dict:
+        """Pull a row (if any) for a given variant from SEGROBUST__summary.tsv."""
+        rr = df[df["variant"] == variant_name]
+        return {} if rr.empty else rr.iloc[0].to_dict()
+
+    def _compute_from_nodes(tag: str) -> dict:
+        """Fallback: compute stats directly from nodes__<tag>.csv when SEGROBUST columns are missing."""
+        csv = CSV_ROOT / tag / f"nodes__{tag}.csv"
+        if not csv.exists():
+            return {}
+        try:
+            dfv = pd.read_csv(csv)
+        except Exception:
+            return {}
+        # choose metric col
+        val_col = "R_m_holdout" if "R_m_holdout" in dfv.columns else ("R_m" if "R_m" in dfv.columns else None)
+        if val_col is None or len(dfv) == 0:
+            return {}
+        x = dfv[val_col].astype(float).to_numpy()
+        x = x[np.isfinite(x)]
+        if x.size == 0:
+            return {}
+        lo, hi = _bootstrap_ci_median_simple(x, B=2000, seed=17)
+        med = float(np.median(x))
+        ic  = image_cluster_stats(dfv, value_col=val_col, B=2000, seed=17)
+        strict_frac = float(dfv["qc_pass_strict"].mean()) if "qc_pass_strict" in dfv.columns and len(dfv) > 0 else float("nan")
+        return {
+            "N_nodes": int(len(dfv)),
+            "N_img": int(ic.get("n_img", dfv["image_id"].nunique() if "image_id" in dfv.columns else 0)),
+            "R_med_node": med,
+            "R_med_node_CI_lo": lo,
+            "R_med_node_CI_hi": hi,
+            "R_med_img": float(ic.get("median", float("nan"))),
+            "R_med_img_CI_lo": float(ic.get("ci", [float("nan"), float("nan")])[0]),
+            "R_med_img_CI_hi": float(ic.get("ci", [float("nan"), float("nan")])[1]),
+            "share_img_Rlt055": float(ic.get("share_img_Rlt055", float("nan"))),
+            "share_img_Rlt085": float(ic.get("share_img_Rlt085", float("nan"))),
+            "strict_pass_frac": strict_frac,
+        }
+
+    rows_for_export = []  # one row per dataset core (base/lo/hi collapsed) for TSV/MD
+    pretty_blocks = []    # human-readable blocks to echo to terminal
+
     for ds in datasets:
         tsv = reports_dir / ds / "SEGROBUST__summary.tsv"
-        if not tsv.exists():
-            continue
-        df = pd.read_csv(tsv, sep="\t")
+        df = pd.read_csv(tsv, sep="\t") if tsv.exists() else pd.DataFrame()
 
-        # Use the segmentation variant with the most nodes in baseline
-        base_rows = df[df["variant"].str.endswith("__base") | (~df["variant"].str.contains("__"))]
+        # Pick the "core" (segmentation+threshold) with most nodes in base
+        if not df.empty and "variant" in df.columns and "N_nodes" in df.columns:
+            base_rows = df[df["variant"].str.endswith("__base") | (~df["variant"].str.contains("__"))]
+        else:
+            base_rows = pd.DataFrame()
         if base_rows.empty:
+            # fallback: derive core name from any available folder under reports/
+            # keep terminal output graceful if nothing is found
+            pretty_blocks.append(f"[SUITE] {ds}: no SEGROBUST__summary.tsv or no base rows — skipping suite console block.")
             continue
 
         best_variant = base_rows.sort_values("N_nodes", ascending=False).iloc[0]["variant"]
         base_core = best_variant.split("__")[0] if "__" in best_variant else best_variant
 
-        # Collect across suite for this core
-        suite_stats: Dict[str, Tuple[float, float, float, int]] = {}
+        # Collect per-variant metrics for base/lo/hi
+        table_rows = []
+        node_meds, img_meds = [], []
         for s in suite_names:
-            if s != "base":
-                look = f"{base_core}__{s}"
-            else:
-                # allow either "base_core" or "base_core__base" as "base"
-                look = base_core if (df["variant"] == base_core).any() else f"{base_core}__base"
-            row = df[df["variant"] == look]
-            if row.empty:
-                continue
-            rmed = float(row.iloc[0]["R_med"])
-            lo = float(row.iloc[0]["R_med_CI_lo"])
-            hi = float(row.iloc[0]["R_med_CI_hi"])
-            n_nodes = int(row.iloc[0]["N_nodes"])
-            suite_stats[s] = (rmed, lo, hi, n_nodes)
+            look = f"{base_core}__{s}" if s != "base" else (base_core if (not df.empty and (df["variant"] == base_core).any()) else f"{base_core}__base")
+            dataset_tag = f"{ds}__{look}"
 
-        if len(suite_stats) == 0:
-            continue
+            # Merge: first take whatever the summary TSV has; fill missing fields from nodes CSV
+            rec = _row_from_segrob(df, look) if not df.empty else {}
+            if rec == {} or any(k not in rec for k in ("R_med_node", "R_med_img", "N_img", "share_img_Rlt055")):
+                rec.update(_compute_from_nodes(dataset_tag))
 
-        # Suite half-range (base/lo/hi) in R_med
-        meds = [suite_stats[s][0] for s in suite_stats]
-        suite_half = 0.5 * (max(meds) - min(meds)) if len(meds) >= 2 else float("nan")
+            # Harmonize field names from older tables (R_med -> R_med_node)
+            if "R_med_node" not in rec:
+                if "R_med" in rec:
+                    rec["R_med_node"] = rec["R_med"]
+                    rec["R_med_node_CI_lo"] = rec.get("R_med_CI_lo", float("nan"))
+                    rec["R_med_node_CI_hi"] = rec.get("R_med_CI_hi", float("nan"))
 
-        # Take base tuple (fall back to "first" if base missing)
-        base_tuple = suite_stats.get("base", next(iter(suite_stats.values())))
+            # PREREG parse at variant level (falls back to dataset base if variant file missing)
+            pre = _parse_prereg_variant(reports_dir, dataset_tag)
+            c1_str = ("NA" if not pre["found"] else
+                      f"Outcome={pre['outcome'] or 'NA'}; worst p_med={pre['p_med_worst']}; "
+                      f"worst p_frac={pre['p_frac_worst']}; max δ={pre['delta_max']}")
 
-        # Build systematic contributions
-        systs: List[float] = []
-        if len(meds) >= 2:
-            systs.append(suite_half)
+            row_show = {
+                "variant": look,
+                "N_img": int(rec.get("N_img", 0) or 0),
+                "N_nodes": int(rec.get("N_nodes", 0) or 0),
+                "R_node": float(rec.get("R_med_node", float("nan"))),
+                "R_node_lo": float(rec.get("R_med_node_CI_lo", float("nan"))),
+                "R_node_hi": float(rec.get("R_med_node_CI_hi", float("nan"))),
+                "R_img": float(rec.get("R_med_img", float("nan"))),
+                "R_img_lo": float(rec.get("R_med_img_CI_lo", float("nan"))),
+                "R_img_hi": float(rec.get("R_med_img_CI_hi", float("nan"))),
+                "share055": float(rec.get("share_img_Rlt055", float("nan"))),
+                "share085": float(rec.get("share_img_Rlt085", float("nan"))),
+                "strict_frac": float(rec.get("strict_pass_frac", float("nan"))),
+                "c1": c1_str,
+            }
+            table_rows.append(row_show)
+            if not math.isnan(row_show["R_node"]): node_meds.append(row_show["R_node"])
+            if not math.isnan(row_show["R_img"]):  img_meds.append(row_show["R_img"])
 
-        # Segmentation half-range across all variants that share this core
-        try:
-            core_prefix = base_core.split("__")[0]
-            seg_block = df[df["variant"].str.startswith(core_prefix)]
-            if not seg_block.empty:
-                v = seg_block["R_med"].astype(float).to_numpy()
-                if v.size >= 2:
-                    seg_half = 0.5 * (float(np.nanmax(v)) - float(np.nanmin(v)))
-                    systs.append(seg_half)
-        except Exception:
-            pass
+        # Compute suite systematics (half-range across base/lo/hi)
+        suite_half_node = (0.5 * (max(node_meds) - min(node_meds))) if len(node_meds) >= 2 else float("nan")
+        suite_half_img  = (0.5 * (max(img_meds)  - min(img_meds)))  if len(img_meds)  >= 2 else float("nan")
 
-        # Combined systematic: quadrature of available components
-        systematic_combined = math.sqrt(sum(x * x for x in systs)) if systs else float("nan")
+        # Optional segmentation half-range across all variants that share this core
+        seg_half_node = float("nan")
+        seg_half_img  = float("nan")
+        if not df.empty:
+            try:
+                core_prefix = base_core.split("__")[0]
+                seg_block = df[df["variant"].str.startswith(core_prefix)]
+                if not seg_block.empty:
+                    v_node = (seg_block["R_med_node"] if "R_med_node" in seg_block.columns else seg_block["R_med"]).astype(float).to_numpy()
+                    if v_node.size >= 2:
+                        seg_half_node = 0.5 * (float(np.nanmax(v_node)) - float(np.nanmin(v_node)))
+                    if "R_med_img" in seg_block.columns:
+                        v_img = seg_block["R_med_img"].astype(float).to_numpy()
+                        if v_img.size >= 2:
+                            seg_half_img = 0.5 * (float(np.nanmax(v_img)) - float(np.nanmin(v_img)))
+            except Exception:
+                pass
 
-        rows.append({
-            "dataset": ds,
-            "variant_core": base_core,
-            "R_med_base": base_tuple[0],
-            "R_med_CI_lo": base_tuple[1],
-            "R_med_CI_hi": base_tuple[2],
-            "N_nodes_base": base_tuple[3],
-            # store the combined systematic in the same column name you already use
-            "systematic_half_range": systematic_combined,
-        })
+        # Combined (quadrature) systematics
+        def _qsum(*vals):
+            vs = [float(v) for v in vals if v is not None and not math.isnan(v)]
+            return math.sqrt(sum(v*v for v in vs)) if vs else float("nan")
+        syst_comb_node = _qsum(suite_half_node, seg_half_node)
+        syst_comb_img  = _qsum(suite_half_img,  seg_half_img)
 
-    if not rows:
-        return
+        # Build pretty console block
+        header = f"===== SUITE TRIPLET — {ds}  |  core={base_core}  |  metric=heldout (if available) ====="
+        colhdr = ("variant", "N_img", "N_nodes", "R_node_med [95% CI]", "R_img_med [95% CI]", "Pr_img[R<0.55]", "Pr_img[R<0.85]", "strict_QC", "PREREG C1")
+        lines = [header,
+                 f"{colhdr[0]:<22} {colhdr[1]:>6} {colhdr[2]:>8}  {colhdr[3]:>23}  {colhdr[4]:>23}  {colhdr[5]:>14}  {colhdr[6]:>14}  {colhdr[7]:>9}  {colhdr[8]}"]
+        for r in table_rows:
+            rnode = f"{r['R_node']:.3f}[{r['R_node_lo']:.3f},{r['R_node_hi']:.3f}]" if not math.isnan(r['R_node']) else "nan"
+            rimg  = f"{r['R_img']:.3f}[{r['R_img_lo']:.3f},{r['R_img_hi']:.3f}]" if not math.isnan(r['R_img']) else "nan"
+            s055  = (f"{r['share055']:.2%}" if not math.isnan(r['share055']) else "nan")
+            s085  = (f"{r['share085']:.2%}" if not math.isnan(r['share085']) else "nan")
+            sqc   = (f"{r['strict_frac']:.2%}" if not math.isnan(r['strict_frac']) else "nan")
+            lines.append(f"{r['variant']:<22} {r['N_img']:>6d} {r['N_nodes']:>8d}  {rnode:>23}  {rimg:>23}  {s055:>14}  {s085:>14}  {sqc:>9}  {r['c1']}")
+        lines.append("")
+        lines.append(f"Suite systematics (half-range across base/lo/hi):  node = ±{suite_half_node:.3f}   img = ±{suite_half_img:.3f}")
+        if not math.isnan(seg_half_node) or not math.isnan(seg_half_img):
+            lines.append(f"Segmentation half-range (same core across segs):  node = ±{seg_half_node:.3f}   img = ±{seg_half_img:.3f}")
+        lines.append(f"Combined systematic (quadrature):                 node = ±{syst_comb_node:.3f}   img = ±{syst_comb_img:.3f}")
+        lines.append("")
 
-    df_out = pd.DataFrame(
-        rows,
-        columns=[
-            "dataset",
-            "variant_core",
-            "R_med_base",
-            "R_med_CI_lo",
-            "R_med_CI_hi",
-            "N_nodes_base",
-            "systematic_half_range",
-        ],
-    )
-    out_dir.mkdir(parents=True, exist_ok=True)
-    tsv_out = out_dir / "ALL__SUITE_summary.tsv"
-    md_out = out_dir / "ALL__SUITE_summary.md"
-    df_out.to_csv(tsv_out, sep="\t", index=False)
+        pretty_blocks.append("\n".join(lines))
 
-    md_lines = [
-        "| dataset | variant_core | R_med (base) | 95% CI lo | 95% CI hi | N (base) | systematic (± combined) |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
-    ]
-    for _, r in df_out.iterrows():
-        md_lines.append(
-            f"| {r['dataset']} | {r['variant_core']} | {r['R_med_base']:.3f} | "
-            f"{r['R_med_CI_lo']:.3f} | {r['R_med_CI_hi']:.3f} | {int(r['N_nodes_base'])} | "
-            f"±{r['systematic_half_range']:.3f} |"
-        )
-    md_out.write_text("\n".join(md_lines) + "\n")
+        # For machine-readable export: keep one row per dataset (base-core) for paper tables
+        # (store base medians at node/image + combined systematic)
+        base_row = next((r for r in table_rows if r["variant"].endswith("__base") or r["variant"] == base_core), table_rows[0] if table_rows else None)
+        if base_row is not None:
+            rows_for_export.append({
+                "dataset": ds,
+                "variant_core": base_core,
+                "R_med_node_base": base_row["R_node"],
+                "R_med_node_CI_lo": base_row["R_node_lo"],
+                "R_med_node_CI_hi": base_row["R_node_hi"],
+                "R_med_img_base": base_row["R_img"],
+                "R_med_img_CI_lo": base_row["R_img_lo"],
+                "R_med_img_CI_hi": base_row["R_img_hi"],
+                "N_nodes_base": base_row["N_nodes"],
+                "N_img_base": base_row["N_img"],
+                "systematic_half_range_node": suite_half_node if not math.isnan(suite_half_node) else float("nan"),
+                "systematic_half_range_img":  suite_half_img  if not math.isnan(suite_half_img)  else float("nan"),
+                "systematic_seg_half_node": seg_half_node,
+                "systematic_seg_half_img":  seg_half_img,
+                "systematic_comb_node": syst_comb_node,
+                "systematic_comb_img":  syst_comb_img,
+            })
 
-    log("====== CROSS-SUITE SUMMARY ======")
-    log(df_out.to_string(index=False))
-    log(f"Saved: {tsv_out}")
-    log(f"Saved: {md_out}")
-    log("=================================")
+    # Echo consolidated blocks to terminal/log
+    if pretty_blocks:
+        log("====== CROSS-SUITE SUMMARY (console) ======")
+        for blk in pretty_blocks:
+            log(blk)
+        log("===========================================")
+
+    # Write machine-readable TSV/MD
+    if rows_for_export:
+        df_out = pd.DataFrame(rows_for_export, columns=[
+            "dataset","variant_core",
+            "R_med_node_base","R_med_node_CI_lo","R_med_node_CI_hi",
+            "R_med_img_base","R_med_img_CI_lo","R_med_img_CI_hi",
+            "N_nodes_base","N_img_base",
+            "systematic_half_range_node","systematic_half_range_img",
+            "systematic_seg_half_node","systematic_seg_half_img",
+            "systematic_comb_node","systematic_comb_img",
+        ])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        tsv_out = out_dir / "ALL__SUITE_summary.tsv"
+        md_out  = out_dir / "ALL__SUITE_summary.md"
+        df_out.to_csv(tsv_out, sep="\t", index=False)
+
+        md_lines = [
+            "| dataset | variant_core | R_node (base) | 95% lo | 95% hi | R_img (base) | 95% lo | 95% hi | N_nodes | N_img | syst_node | syst_img | seg_syst_node | seg_syst_img | comb_node | comb_img |",
+            "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ]
+        for _, r in df_out.iterrows():
+            md_lines.append(
+                f"| {r['dataset']} | {r['variant_core']} | "
+                f"{r['R_med_node_base']:.3f} | {r['R_med_node_CI_lo']:.3f} | {r['R_med_node_CI_hi']:.3f} | "
+                f"{r['R_med_img_base']:.3f} | {r['R_med_img_CI_lo']:.3f} | {r['R_med_img_CI_hi']:.3f} | "
+                f"{int(r['N_nodes_base'])} | {int(r['N_img_base'])} | "
+                f"±{r['systematic_half_range_node']:.3f} | ±{r['systematic_half_range_img']:.3f} | "
+                f"±{r['systematic_seg_half_node']:.3f} | ±{r['systematic_seg_half_img']:.3f} | "
+                f"±{r['systematic_comb_node']:.3f} | ±{r['systematic_comb_img']:.3f} |"
+            )
+        Path(md_out).write_text("\n".join(md_lines) + "\n")
+
+        log("====== CROSS-SUITE SUMMARY (files) ======")
+        log(df_out.to_string(index=False))
+        log(f"Saved: {tsv_out}")
+        log(f"Saved: {md_out}")
+        log("========================================")
 
 
 

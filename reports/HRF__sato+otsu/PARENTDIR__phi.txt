@@ -1,6 +1,6 @@
 DATASET: HRF__sato+otsu
-Residual ΔR>0 vs m=2: n=19127, p=7.83e-289
-Residual ΔR>0 vs m=1: n=19127, p=1.64e-136
-Angle Δφ>0 vs m=2: n=19106, p=1.05e-56
-Angle Δφ>0 vs m=1: n=19106, p=8.03e-12
-Angle Δφ>0 vs 120°: n=19106, p=0.00e+00
+Residual ΔR>0 vs m=2: n=19126, p=6.41e-239
+Residual ΔR>0 vs m=1: n=19126, p=2.01e-60
+Angle Δφ>0 vs m=2: n=19101, p=4.71e-112
+Angle Δφ>0 vs m=1: n=19101, p=2.17e-58
+Angle Δφ>0 vs 120°: n=19101, p=0.00e+00

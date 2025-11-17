@@ -1,6 +1,0 @@
-DATASET: HRF__frangi+otsu
-Residual ΔR>0 vs m=2: n=18768, p=0.00e+00
-Residual ΔR>0 vs m=1: n=18768, p=0.00e+00
-Angle Δφ>0 vs m=2: n=12394, p=5.82e-03
-Angle Δφ>0 vs m=1: n=12394, p=5.71e-06
-Angle Δφ>0 vs 120°: n=12394, p=1.93e-20

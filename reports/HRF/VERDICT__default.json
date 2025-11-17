@@ -1,0 +1,73 @@
+{
+  "dataset": "HRF",
+  "fingerprint": "baa75ae1658bf943",
+  "results": [
+    {
+      "ablation": {
+        "found": true,
+        "pass": true,
+        "worst_p": 0.00049975
+      },
+      "dataset_tag": "HRF__sato+otsu__lo",
+      "equipartition": {
+        "cvK_med": null,
+        "cvS_med": null,
+        "found": false,
+        "pass": null,
+        "targets": {
+          "CVK": 0.3,
+          "CVS": 0.3
+        }
+      },
+      "overall": "NO SUPPORT",
+      "panelC": {
+        "found": true,
+        "pass": false,
+        "share": 0.228
+      },
+      "parent_direction": {
+        "alpha": 0.0001,
+        "found": true,
+        "p_120": 0.0,
+        "p_m1": 1.54e-74,
+        "p_m2": 2.1e-66,
+        "pass": true
+      },
+      "points": 2,
+      "primary_prereg": {
+        "alpha": 0.001,
+        "found": true,
+        "max_cliffs_delta": -0.279929,
+        "pass": false,
+        "worst_p_frac055": null,
+        "worst_p_median": null
+      },
+      "secondaries_counted": 4,
+      "snell": {
+        "N": null,
+        "R2": null,
+        "ci": [
+          null,
+          null
+        ],
+        "criteria": {
+          "R2_min": 0.5,
+          "min_N": 30
+        },
+        "found": false,
+        "intercept": null,
+        "p_rot": null,
+        "p_sh": null,
+        "pass": null,
+        "slope": null
+      },
+      "uncertainty": {
+        "found": true,
+        "pass": false
+      }
+    }
+  ],
+  "scope": "dataset",
+  "time_utc": "2025-11-17 07:57:03 UTC",
+  "verdict_name": "default"
+}

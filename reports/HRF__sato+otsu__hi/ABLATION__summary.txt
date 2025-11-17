@@ -1,0 +1,19 @@
+DATASET: HRF__sato+otsu__hi
+Grid svd_ratio_min=(3.0, 3.5, 4.0), angle_min_deg=(10.0, 12.0, 15.0)
+Valid cells (n>=20): 9 / 9
+Baseline strict-QC: 0.9293
+Worst p (lower better) over valid cells: 0.00049975
+Worst strict-QC drift: 1.13 pp
+median R(m):
+  svd≥3: 0.236, 0.236, 0.236
+  svd≥3.5: 0.236, 0.236, 0.236
+  svd≥4: 0.231, 0.231, 0.231
+p-values (≤ 0.01 required):
+  svd≥3: 0.0005, 0.0005, 0.0005
+  svd≥3.5: 0.0005, 0.0005, 0.0005
+  svd≥4: 0.0005, 0.0005, 0.0005
+strict-QC fractions:
+  svd≥3: 0.929, 0.930, 0.931
+  svd≥3.5: 0.929, 0.930, 0.931
+  svd≥4: 0.940, 0.940, 0.941
+Outcome: PASS

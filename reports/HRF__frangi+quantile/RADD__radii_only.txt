@@ -1,0 +1,10 @@
+DATASET: HRF__frangi+quantile
+alpha_star=1.550000
+α*=1.550 median Dα=0.406 95% CI [0.369,0.464]
+α=3.0 median Dα=0.500 95% CI [0.500,0.500]
+α=2.5 median Dα=0.500 95% CI [0.500,0.500]
+α_i=(m_angleonly+4)/2 median Dα=0.500 95% CI [0.500,0.500]
+  paired improvement (ΔD = α=3.0 − α*): n=1294, p=1.745e-48
+  paired improvement (ΔD = α=3.0 − α_i): n=1294, p=7.412e-45
+  paired improvement (ΔD = α=2.5 − α*): n=1294, p=3.773e-44
+  paired improvement (ΔD = α=2.5 − α_i): n=1294, p=0.1262

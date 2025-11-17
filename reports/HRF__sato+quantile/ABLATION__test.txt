@@ -1,3 +1,0 @@
-Outcome: PASS
-Worst p: 0.00049975
-Worst QC drift: 3.39 pp

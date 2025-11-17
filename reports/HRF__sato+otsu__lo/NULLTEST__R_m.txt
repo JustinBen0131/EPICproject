@@ -1,0 +1,9 @@
+DATASET: HRF__sato+otsu__lo
+Image-clustered median=0.207657 [95% CI 0.205084,0.220223] | N_img=45 | share_img[R<0.55]=1.000, R<0.85=1.000
+N nodes: 19147 (metric=R_m_holdout)
+Observed(R_m_holdout): median=0.214965 [95% CI 0.211917,0.218413], frac<0.55=0.929284
+Null reps per control: 2000
+shuffle: med_null=0.864422, Δmedian(obs-null)=-0.649457, p_median(lower)=≤ 1/n_perm (=0.0005), p_frac<0.55(higher)=≤ 1/n_perm (=0.0005), Cliff's δ=-0.845711 (large)
+swap: p_median(lower)≤ 1/n_perm (=0.0005), p_frac<0.55(higher)≤ 1/n_perm (=0.0005), Cliff's δ=-0.279929 (small; obs < null)
+randtheta: p_median(lower)≤ 1/n_perm (=0.0005), p_frac<0.55(higher)≤ 1/n_perm (=0.0005), Cliff's δ=-0.773332 (large; obs < null)
+rshuffle: p_median(lower)≤ 1/n_perm (=0.0005), p_frac<0.55(higher)≤ 1/n_perm (=0.0005), Cliff's δ=-0.494995 (large; obs < null)

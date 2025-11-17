@@ -1,8 +1,9 @@
 DATASET: HRF__frangi+quantile
-N nodes: 52983
-Observed: median=0.440747 [95% CI 0.437579,0.443415], frac<0.55=0.765566
-Null reps per control: 2000
-shuffle: p_median(lower)= 0.00049975, p_frac<0.55(higher)= 0.00049975, Cliff's δ=-0.616417
-swap: p_median(lower)= 0.00049975, p_frac<0.55(higher)= 0.00049975, Cliff's δ=-0.110560
-randtheta: p_median(lower)= 0.00049975, p_frac<0.55(higher)= 0.00049975, Cliff's δ=-0.540919
-rshuffle: p_median(lower)= 0.00049975, p_frac<0.55(higher)= 0.00049975, Cliff's δ=-0.242054
+Image-clustered median=0.503644 [95% CI 0.479614,0.517197] | N_img=4 | share_img[R<0.55]=1.000, R<0.85=1.000
+N nodes: 1651
+Observed: median=0.494568 [95% CI 0.488237,0.499683], frac<0.55=0.678377
+Null reps per control: 200
+shuffle: med_null=0.810046, Δmedian(obs-null)=-0.315478, p_median(lower)=0.00497512, p_frac<0.55(higher)=0.00497512, Cliff's δ=-0.500614 (large)
+swap: p_median(lower)= 0.00497512, p_frac<0.55(higher)= 0.00497512, Cliff's δ=-0.033243
+randtheta: p_median(lower)= 0.00497512, p_frac<0.55(higher)= 0.00497512, Cliff's δ=-0.478450
+rshuffle: p_median(lower)= 0.00497512, p_frac<0.55(higher)= 0.00497512, Cliff's δ=-0.150603

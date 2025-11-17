@@ -1,0 +1,2 @@
+dataset	variant_core	R_med_node_base	R_med_node_CI_lo	R_med_node_CI_hi	R_med_img_base	R_med_img_CI_lo	R_med_img_CI_hi	N_nodes_base	N_img_base	systematic_half_range_node	systematic_half_range_img	systematic_seg_half_node	systematic_seg_half_img	systematic_comb_node	systematic_comb_img
+HRF	sato+otsu	0.2322312444448471	0.2284372361376881	0.2360635409131646	0.2269691452383995	0.2198484688997268	0.2372624427080154	19126	45	0.013857629150152206	0.014853846281766891	0.013857629150152206	0.014853846281766891	0.019597647086481998	0.021006510865079906

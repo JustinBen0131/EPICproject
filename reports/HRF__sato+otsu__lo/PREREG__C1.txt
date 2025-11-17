@@ -1,0 +1,10 @@
+DATASET: HRF__sato+otsu__lo
+Claim HRF-C1 (held-out closure @ angle-only m):
+Observed \tilde R = 0.214965  [boot 95% CI 0.211917,0.218413]
+shuffle: p_median(lower)=0.00049975, p_frac<0.55(higher)=0.00049975, Cliff's δ=-0.845711
+swap: p_median(lower)=0.00049975, p_frac<0.55(higher)=0.00049975, Cliff's δ=-0.279929
+randtheta: p_median(lower)=0.00049975, p_frac<0.55(higher)=0.00049975, Cliff's δ=-0.773332
+rshuffle: p_median(lower)=0.00049975, p_frac<0.55(higher)=0.00049975, Cliff's δ=-0.494995
+Thresholds: p <= 0.001 on BOTH median and Pr[R<0.55], and Cliff's δ <= -0.20 vs EVERY null
+Worst-case across nulls: p_med=≤ 1/n_perm (=0.0005), p_frac=≤ 1/n_perm (=0.0005), max δ=-0.279929
+Outcome: PASS

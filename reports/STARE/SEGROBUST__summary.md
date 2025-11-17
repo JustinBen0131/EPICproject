@@ -1,3 +1,0 @@
-| variant | N_nodes | R_med | R_med_CI_lo | R_med_CI_hi | p_med | delta | Outcome | p_med_jit | delta_jit | Outcome_jit | strict_pass_frac |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| sato+otsu | 16506 | 0.31292298436164856 | 0.30801007971167566 | 0.3180403709411621 |  |  | FAIL |  |  |  | 0.7650551314673452 |

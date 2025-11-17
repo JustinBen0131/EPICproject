@@ -1,0 +1,14 @@
+===== VERDICT (default) — HRF =====
+time: 2025-11-17 07:57:03 UTC
+scope: dataset
+
+[HRF__sato+otsu__lo] OVERALL: NO SUPPORT  |  points=2 (primary=4, +1 per secondary PASS; counted=4)
+  Primary (held-out closure): FAIL  | worst p_med=None, worst p_frac=None, max δ=-0.279929
+  Panel C (θ–m near-symmetric): FAIL  | share≤0.25=0.228
+  Ablation robustness: PASS
+  Parent-direction Δφ vs baselines: PASS
+  Uncertainty (step 3): FAIL
+  Equipartition (demo): NA
+  Snell refraction (demo): NA
+
+fingerprint: baa75ae1658bf943

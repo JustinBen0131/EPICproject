@@ -1,8 +1,0 @@
-DATASET: CHASE_DB1__sato+otsu
-EPIC median=0.324 95% CI [0.312,0.343]
-m=2 median=0.538 95% CI [0.509,0.566]
-  paired improvement (ΔR): n=1876, sign test p=1.512e-107
-m=1 median=0.365 95% CI [0.354,0.381]
-  paired improvement (ΔR): n=1876, sign test p=2.085e-25
-m*=0.67 median=0.333 95% CI [0.322,0.347]
-  paired improvement (ΔR): n=1876, sign test p=3.109e-13

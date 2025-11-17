@@ -1,6 +1,0 @@
-DATASET: DRIVE__sato+otsu
-Residual ΔR>0 vs m=2: n=83, p=2.11e-07
-Residual ΔR>0 vs m=1: n=83, p=2.75e-02
-Angle Δφ>0 vs m=2: n=83, p=5.10e-01
-Angle Δφ>0 vs m=1: n=83, p=7.84e-02
-Angle Δφ>0 vs 120°: n=83, p=1.24e-01

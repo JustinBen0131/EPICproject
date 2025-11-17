@@ -1,8 +1,9 @@
 DATASET: HRF__sato+otsu
-N nodes: 19127
-Observed: median=0.212897 [95% CI 0.208941,0.216562], frac<0.55=0.912271
+Image-clustered median=0.226969 [95% CI 0.216774,0.237357] | N_img=45 | share_img[R<0.55]=1.000, R<0.85=1.000
+N nodes: 19126 (metric=R_m_holdout)
+Observed(R_m_holdout): median=0.232231 [95% CI 0.228552,0.236009], frac<0.55=0.912214
 Null reps per control: 2000
-shuffle: p_median(lower)= 0.00049975, p_frac<0.55(higher)= 0.00049975, Cliff's δ=-0.838987
-swap: p_median(lower)= 0.00049975, p_frac<0.55(higher)= 0.00049975, Cliff's δ=-0.283161
-randtheta: p_median(lower)= 0.00049975, p_frac<0.55(higher)= 0.00049975, Cliff's δ=-0.758619
-rshuffle: p_median(lower)= 0.00049975, p_frac<0.55(higher)= 0.00049975, Cliff's δ=-0.506330
+shuffle: med_null=0.871747, Δmedian(obs-null)=-0.639515, p_median(lower)=≤ 1/n_perm (=0.0005), p_frac<0.55(higher)=≤ 1/n_perm (=0.0005), Cliff's δ=-0.831167 (large)
+swap: p_median(lower)≤ 1/n_perm (=0.0005), p_frac<0.55(higher)≤ 1/n_perm (=0.0005), Cliff's δ=-0.251608 (small; obs < null)
+randtheta: p_median(lower)≤ 1/n_perm (=0.0005), p_frac<0.55(higher)≤ 1/n_perm (=0.0005), Cliff's δ=-0.737300 (large; obs < null)
+rshuffle: p_median(lower)≤ 1/n_perm (=0.0005), p_frac<0.55(higher)≤ 1/n_perm (=0.0005), Cliff's δ=-0.493039 (large; obs < null)

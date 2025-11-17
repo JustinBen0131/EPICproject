@@ -1,9 +1,9 @@
-DATASET: HRF__sato+otsu
+DATASET: HRF__sato+otsu__hi
 Adaptive symmetric tol used: 1.080
-N_sym=2965, strict PASS=2453
+N_sym=2264, strict PASS=1972
 sym tol (adaptive) r1/r2 ≤ 1.08
-median|Δm|=1.283 (95% CI 1.234–1.331)
-Theil–Sen slope=0.165 [0.155,0.175]
-Pearson r=0.642
-% within |Δm|≤0.25 = 16.5%
+median|Δm|=1.204 (95% CI 1.145–1.263)
+Theil–Sen slope=0.233 [0.220,0.247]
+Pearson r=0.627
+% within |Δm|≤0.25 = 22.8%
 Panel C verdict: FAIL

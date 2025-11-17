@@ -1,8 +1,0 @@
-DATASET: HRF__frangi+otsu
-N nodes: 18768
-Observed: median=0.480728 [95% CI 0.477733,0.484394], frac<0.55=0.712383
-Null reps per control: 2000
-shuffle: p_median(lower)= 0.00049975, p_frac<0.55(higher)= 0.00049975, Cliff's δ=-0.605869
-swap: p_median(lower)= 0.00049975, p_frac<0.55(higher)= 0.00049975, Cliff's δ=-0.043159
-randtheta: p_median(lower)= 0.00049975, p_frac<0.55(higher)= 0.00049975, Cliff's δ=-0.518994
-rshuffle: p_median(lower)= 0.00049975, p_frac<0.55(higher)= 0.00049975, Cliff's δ=-0.229235

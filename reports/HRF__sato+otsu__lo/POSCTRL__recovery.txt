@@ -1,0 +1,8 @@
+DATASET: HRF__sato+otsu__lo
+N synthetic nodes: 1500
+median|Δm|=0.297955
+MAE=0.297955
+Theil–Sen slope=0.747128 [0.710636,0.783185]
+Pearson r=0.628169
+dir noise (deg)=3.000, radius noise frac SD=0.050000
+parent mislabel frac=0.200000

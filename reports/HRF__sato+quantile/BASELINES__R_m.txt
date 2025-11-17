@@ -1,8 +1,0 @@
-DATASET: HRF__sato+quantile
-EPIC median=0.235 95% CI [0.229,0.243]
-m=2 median=0.312 95% CI [0.302,0.323]
-  paired improvement (ΔR): n=5915, sign test p=1.683e-122
-m=1 median=0.243 95% CI [0.239,0.250]
-  paired improvement (ΔR): n=5915, sign test p=1.735e-47
-m*=1.14 median=0.243 95% CI [0.238,0.250]
-  paired improvement (ΔR): n=5915, sign test p=5.002e-42

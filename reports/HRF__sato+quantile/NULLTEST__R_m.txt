@@ -1,8 +1,0 @@
-DATASET: HRF__sato+quantile
-N nodes: 5915
-Observed: median=0.238881 [95% CI 0.231660,0.245093], frac<0.55=0.877768
-Null reps per control: 5000
-shuffle: p_median(lower)= 0.00019996, p_frac<0.55(higher)= 0.00019996, Cliff's δ=-0.779757
-swap: p_median(lower)= 0.00019996, p_frac<0.55(higher)= 0.00019996, Cliff's δ=-0.321623
-randtheta: p_median(lower)= 0.00019996, p_frac<0.55(higher)= 0.00019996, Cliff's δ=-0.707800
-rshuffle: p_median(lower)= 0.00019996, p_frac<0.55(higher)= 0.00019996, Cliff's δ=-0.520605

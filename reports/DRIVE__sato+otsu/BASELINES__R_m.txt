@@ -1,8 +1,0 @@
-DATASET: DRIVE__sato+otsu
-EPIC median=0.389 95% CI [0.318,0.429]
-m=2 median=0.664 95% CI [0.498,0.801]
-  paired improvement (ΔR): n=83, sign test p=2.105e-07
-m=1 median=0.399 95% CI [0.327,0.477]
-  paired improvement (ΔR): n=83, sign test p=0.02753
-m*=0.50 median=0.360 95% CI [0.334,0.421]
-  paired improvement (ΔR): n=83, sign test p=0.1239

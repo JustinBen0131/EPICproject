@@ -1,0 +1,10 @@
+DATASET: HRF__sato+otsu__hi
+alpha_star=2.010000
+α*=2.010 median Dα=0.307 95% CI [0.306,0.314]
+α=3.0 median Dα=0.355 95% CI [0.349,0.363]
+α=2.5 median Dα=0.330 95% CI [0.323,0.333]
+α_i=(m_angleonly+4)/2 median Dα=0.327 95% CI [0.323,0.334]
+  paired improvement (ΔD = α=3.0 − α*): n=19105, p=7.238e-73
+  paired improvement (ΔD = α=3.0 − α_i): n=19104, p=0
+  paired improvement (ΔD = α=2.5 − α*): n=19105, p=9.509e-06
+  paired improvement (ΔD = α=2.5 − α_i): n=19105, p=0.696

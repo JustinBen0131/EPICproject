@@ -1,8 +1,8 @@
 DATASET: HRF__frangi+quantile
-EPIC median=0.441 95% CI [0.438,0.443]
-m=2 median=0.525 95% CI [0.521,0.529]
-  paired improvement (ΔR): n=52983, sign test p=0
-m=1 median=0.448 95% CI [0.446,0.451]
-  paired improvement (ΔR): n=52983, sign test p=0
-m*=0.76 median=0.443 95% CI [0.441,0.445]
-  paired improvement (ΔR): n=52983, sign test p=0
+EPIC median=0.494 95% CI [0.488,0.500]
+m=2 median=0.592 95% CI [0.561,0.620]
+  paired improvement (ΔR): n=1651, sign test p=1.27e-56
+m=1 median=0.505 95% CI [0.495,0.516]
+  paired improvement (ΔR): n=1651, sign test p=2.463e-30
+m*=0.49 median=0.493 95% CI [0.487,0.500]
+  paired improvement (ΔR): n=1651, sign test p=2.216e-18

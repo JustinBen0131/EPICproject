@@ -1,0 +1,60 @@
+===== RUN SUMMARY — HRF__sato+otsu__hi =====
+Dataset base: HRF
+
+[CONFIG SNAPSHOT]
+seg=sato, thresh=otsu, profile=none
+bracket m∈[0.20,4.00]  |  tangent_len=20, svd_ratio_min=3.5
+min_branch_len=10, dedup_radius=3
+strict_qc=False  |  angle_auto=False, angle_floor=10.0
+radius_jitter_frac (run arg)=0.0
+
+[COUNTS]
+Images processed     : 90/90 (with nodes in 45)
+Nodes raw→deg3→kept  : 71599 → 23245 → 19110  | kept/raw 26.7%  kept/deg3 82.2%
+
+[QC & GEOMETRY QUALITY]
+QC loose/strict      : 18717/19110 (97.9%)  |  17759/19110 (92.9%)
+m median (IQR)       : 0.734  (0.200,1.403)   mean=0.954
+m at bracket edge    : 4573  (23.9%) at ±0.02
+angle_min per image  : median=13.0°  range=(13.0°, 13.0°)
+parent ambiguity     : 86.6%
+
+[TOP-LINE METRICS]
+Segmentation / suite: sato+otsu  |  hi  |  panel=all
+Images with nodes    : 45 (unique images contributing to this variant)
+Nodes kept           : 19110/71599 (26.7%)
+m(m) central tendency: median=0.73; IQR width=1.20
+R(m) node median   : 0.243
+R(m) image-median   : 0.237   95% CI [0.229,0.243]   N_img(with nodes)=45/90   share_img[R<0.55]=50.00% (denom includes zero-node images)   R<0.85=50.00%
+
+[BASELINES — EPIC vs fixed-m]
+m=2: median=0.266; one-sided sign-test ΔR>0: n=19110, p=6.46e-208; paired ΔR median=0.035 [95% CI 0.032,0.039]
+m=1: median=0.230; one-sided sign-test ΔR>0: n=19110, p=2.79e-82; paired ΔR median=0.011 [95% CI 0.010,0.012]
+m*=1.20: median=0.226; one-sided sign-test ΔR>0: n=19110, p=1.62e-51; paired ΔR median=0.008 [95% CI 0.007,0.010]
+[img-median] m=2: n=45, one-sided p=1.56e-06; median ΔR=0.025 [95% CI 0.017,0.038]
+[img-median] m=1: n=45, one-sided p=9.82e-01; median ΔR=-0.004 [95% CI -0.012,0.001]
+[img-median] m*=1.20: n=45, one-sided p=9.64e-01; median ΔR=-0.013 [95% CI -0.018,0.001]
+
+[PREREG STEP 1 — Held-out closure test]
+Outcome: PASS | Worst-case across nulls: p_med=≤ 1/n_perm (=0.0005), p_frac=≤ 1/n_perm (=0.0005), max δ=-0.221041
+
+[STEP 4 — Ablation & robustness grid]
+Outcome: PASS | Worst p: 0.00049975 | Worst QC drift: 1.13 pp
+
+[ARTIFACTS]
+/Users/patsfan753/Desktop/EPIC/figures/HRF__sato+otsu__hi/dataset_HRF__sato+otsu__hi__residual_hist.png
+/Users/patsfan753/Desktop/EPIC/figures/HRF__sato+otsu__hi/dataset_HRF__sato+otsu__hi__residual_baselines.png
+/Users/patsfan753/Desktop/EPIC/figures/HRF__sato+otsu__hi/dataset_HRF__sato+otsu__hi__paired_deltaR_ecdf.png
+/Users/patsfan753/Desktop/EPIC/figures/HRF__sato+otsu__hi/dataset_HRF__sato+otsu__hi__theta_vs_m_scatter.png
+/Users/patsfan753/Desktop/EPIC/figures/HRF__sato+otsu__hi/dataset_HRF__sato+otsu__hi__ablation_medianR_grid.png
+/Users/patsfan753/Desktop/EPIC/figures/HRF__sato+otsu__hi/dataset_HRF__sato+otsu__hi__QC_tradeoff_curves.png
+
+[SKIP REASONS]
+not_deg3=2895 (68.4%), bad_tangent=1180 (27.9%), angle_out_of_range=90 (2.1%), short_branch=65 (1.5%), no_m_candidate=0 (0.0%), qc_fail=0 (0.0%), small_radius=0 (0.0%)
+
+[WARNINGS]
+- M AT BRACKET EDGE: 23.9% at ±0.02 of bracket — consider widening bracket or re-check m solver.
+- PARENT AMBIGUITY: 86.6% nodes ambiguous — consider stronger gating or tie-breakers.
+- SPARSE IMAGES: 45 image(s) produced zero kept nodes — check segmentation or QC thresholds.
+
+Elapsed: 51m 15s

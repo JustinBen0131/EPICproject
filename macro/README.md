@@ -3,6 +3,18 @@
 > **TL;DR.** This repository hosts the code and artifacts for an *angle-only* EPIC analysis on the **HRF** dataset with **Sato** filtering and **Otsu** thresholding. All preregistered tests **pass**. EPIC improves upon fixed-\(m\) baselines at both node- and image-level residuals and remains robust under systematic perturbations of geometry/quality gates.
 
 
+NOTE for paper I ran with:
+                --datasets HRF \
+                --seg-method sato \
+                --thresh-method otsu \
+                --primary-metric heldout \
+                --suite-triplet \
+                --save-debug \
+                --validate \
+                --posctrl-parent-mislabel 0.2
+
+
+
 ## Table of contents
 
 - [Repository layout](#repository-layout)

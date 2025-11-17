@@ -3517,7 +3517,8 @@ def plot_parent_direction_error(df: pd.DataFrame, dataset: str):
         "120° − EPIC": (phi_m0 - phi_epic)
     }
     ax2.boxplot([v[np.isfinite(v)] for v in deltas.values()],
-                labels=list(deltas.keys()))
+            tick_labels=list(deltas.keys()))
+
 
     ax2.axhline(0.0, linewidth=1.0)
     ax2.set_ylabel("Δφ (degrees)"); ax2.set_title(f"Parent-direction Δφ — {dataset}")
@@ -4947,31 +4948,66 @@ def _parse_nulltest_shuffle(dataset_tag: str, reports_dir: Path) -> Dict:
 
 
 
-def _parse_prereg_c1_from_file(path: Path) -> Dict[str, Any]:
-    out = {"dataset": path.parent.name, "variant": path.stem.replace("PREREG__C1", "").strip("_")}
-    try:
-        txt = path.read_text()
-    except Exception:
+def _parse_prereg_c1_from_file(dataset_tag: str, reports_dir: Path) -> Dict[str, Any]:
+    """
+    Parse reports/<dataset_tag>/PREREG__C1.txt (variant-level) and return a dict
+    with the fields expected by _make_variant_row. Any missing quantities are
+    filled with None so downstream code never KeyErrors.
+    """
+    # Location: reports/<dataset_tag>/PREREG__C1.txt
+    path = reports_dir / dataset_tag / "PREREG__C1.txt"
+
+    out: Dict[str, Any] = {
+        "dataset": dataset_tag.split("__", 1)[0],
+        "variant": dataset_tag.split("__", 1)[1] if "__" in dataset_tag else dataset_tag,
+        "outcome": None,
+        "p_med": None,
+        "delta": None,
+        # optional jitter fields so _make_variant_row can safely access them
+        "p_med_jit": None,
+        "delta_jit": None,
+        "Outcome_jit": None,
+    }
+
+    txt = _safe_read(path)
+    if not txt:
         return out
 
-    # Capture overall outcome if present
+    # Outcome (PASS/FAIL/WARN)
     m_outcome = re.search(r"Outcome:\s*(PASS|FAIL|WARN)", txt)
-
-    # Accept multiple phrasings for p_median and Cliff's delta
-    m_p = (re.search(r"p_median\s*\(lower\)\s*=\s*([0-9eE\.\-+]+)", txt)
-           or re.search(r"p_med\s*=\s*([0-9eE\.\-+]+)", txt)
-           or re.search(r"one-sided p_median\s*=\s*([0-9eE\.\-+]+)", txt))
-
-    m_d = (re.search(r"Cliff['’]s\s*δ\s*=\s*([0-9eE\.\-+]+)", txt)
-           or re.search(r"Cliff['’]s\s*delta\s*=\s*([0-9eE\.\-+]+)", txt))
-
     if m_outcome:
         out["outcome"] = m_outcome.group(1)
+
+    # Accept multiple phrasings for p_median and Cliff's delta
+    m_p = (
+        re.search(r"p_median\s*\(lower\)\s*=\s*([0-9eE\.\-+]+)", txt)
+        or re.search(r"p_med\s*=\s*([0-9eE\.\-+]+)", txt)
+        or re.search(r"one-sided p_median\s*=\s*([0-9eE\.\-+]+)", txt)
+    )
+    m_d = (
+        re.search(r"Cliff['’]s\s*δ\s*=\s*([0-9eE\.\-+]+)", txt)
+        or re.search(r"Cliff['’]s\s*delta\s*=\s*([0-9eE\.\-+]+)", txt)
+    )
+
     if m_p:
         out["p_med"] = float(m_p.group(1))
     if m_d:
         out["delta"] = float(m_d.group(1))
+
+    # Optional jitter block (future-proof; harmless if not present)
+    m_pj = re.search(r"p_median_jit\s*=\s*([0-9eE\.\-+]+)", txt)
+    m_dj = re.search(r"Cliff['’]s\s*delta_jit\s*=\s*([0-9eE\.\-+]+)", txt)
+    m_oj = re.search(r"Outcome \(jitter\):\s*(PASS|FAIL|WARN)", txt)
+
+    if m_pj:
+        out["p_med_jit"] = float(m_pj.group(1))
+    if m_dj:
+        out["delta_jit"] = float(m_dj.group(1))
+    if m_oj:
+        out["Outcome_jit"] = m_oj.group(1)
+
     return out
+
 
 
 

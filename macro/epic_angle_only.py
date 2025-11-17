@@ -2180,10 +2180,10 @@ def plot_residual_distribution(
     ci_style = (0, (1, 2))   # fine dotted pattern for CI
 
     # 95% CI on the median — vertical band shown as two dotted lines
-    ax.axvline(ci_lo, color=ci_color, linestyle=ci_style, linewidth=1.6, zorder=4)
-    ax.axvline(ci_hi, color=ci_color, linestyle=ci_style, linewidth=1.6, zorder=4)
+    ax.axvline(ci_lo, color=ci_color, linestyle=ci_style, linewidth=1.6, zorder=2)
+    ax.axvline(ci_hi, color=ci_color, linestyle=ci_style, linewidth=1.6, zorder=2)
 
-    # Text box summarizing the median and its CI
+    # Text box summarizing the median and its CI (drawn above the CI lines)
     ax.annotate(
         f"median = {obs_median:.3f}\n95% CI [{ci_lo:.3f}, {ci_hi:.3f}]",
         xy=(0.015, 0.98),
@@ -2191,9 +2191,10 @@ def plot_residual_distribution(
         ha="left",
         va="top",
         fontsize=9,
+        zorder=5,
         bbox=dict(
             facecolor="white",
-            alpha=0.90,
+            alpha=1.0,          # fully opaque so nothing shows through
             edgecolor="none",
             boxstyle="round,pad=0.25",
         ),
@@ -5037,18 +5038,20 @@ def _make_variant_row(df, dataset_tag, reports_dir, primary_metric="heldout"):
         "R_med": med,
         "R_med_CI_lo": lo,
         "R_med_CI_hi": hi,
-        "p_med": c1["p_med"],
-        "delta": c1["delta"],
-        "Outcome": c1["outcome"],
-        "p_med_jit": c1["p_med_jit"],
-        "delta_jit": c1["delta_jit"],
-        "Outcome_jit": c1["outcome_jit"],
+        # core prereg stats (may be None if not present)
+        "p_med": c1.get("p_med"),
+        "delta": c1.get("delta"),
+        "Outcome": c1.get("outcome"),
+        # optional jitter block — use .get so missing keys become None
+        "p_med_jit": c1.get("p_med_jit"),
+        "delta_jit": c1.get("delta_jit"),
+        # tolerate either 'Outcome_jit' or 'outcome_jit' in the dict
+        "Outcome_jit": c1.get("Outcome_jit", c1.get("outcome_jit")),
         "strict_pass_frac": strict_frac,
     }
+
+
     return row
-
-
-
 
 
 
